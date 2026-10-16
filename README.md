@@ -1,10 +1,20 @@
-# Data Watch
+<p align="center">
+  <img src="https://raw.githubusercontent.com/benaiah-muga/data-watch/main/docs/assets/data-watch-logo.svg" alt="Data Watch logo" width="80" height="80">
+</p>
+
+<h1 align="center">Data Watch</h1>
+
+<p align="center">Your hotspot data, accounted for.</p>
 
 My phone's hotspot report showed that my PC was using about 80% of my mobile data. I was mostly using Codex in VS Code and searching the web, so I wanted a small tool that could answer two questions: when is the data being used, and which programs can be tied to it? Data Watch records connection totals and best-effort program estimates locally, then shows them in a private dashboard.
 
 Data Watch is currently for **Ubuntu Linux**. Windows and macOS support are future work because each operating system exposes network and desktop notification features differently.
 
 Read the [development story](docs/development-story.md) for the investigation that led to Data Watch and the problems the collector and interface had to solve.
+
+![Data Watch dashboard showing live throughput, connection selection, download and upload totals, and a usage timeline](https://raw.githubusercontent.com/benaiah-muga/data-watch/main/docs/assets/dashboard.png)
+
+*The dashboard shows live traffic, historical usage, and collection status, including warnings when program attribution may be incomplete.*
 
 ## Install
 

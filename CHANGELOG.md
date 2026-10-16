@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A dashboard screenshot and reusable SVG project logo in the README and repository assets.
+
 ## 1.2.0 - 2026-10-16
 
 ### Added
