@@ -25,3 +25,12 @@ The dashboard is local-only: its HTTP server binds to loopback, its history stay
 The layout uses responsive breakpoints to stack the header and summary controls on narrow screens and keep the usage cards in two columns. Its main tradeoff is attribution accuracy versus system overhead: interface totals remain the broadest measure, while process attribution is best-effort and depends on the capture mode and Linux metadata available at the time.
 
 Program browsing also needed to work without precise clicks or a long page of rows. Selecting any part of a program row now opens a native dialog, with keyboard focus kept inside the card and returned to the list when it closes. The card uses the selected time interval and reuses history already loaded by the dashboard. The list starts with ten programs and expands into a scrollable view that retains its position during polling. These changes make the details easier to reach without adding network requests for each interaction.
+
+
+## Coding-agent traffic and disconnected history
+
+A later review found substantial traffic attributed to active coding-agent processes, even after continuous capture was enabled. Session metadata showed many more model/tool rounds than the number of human prompts suggested. We documented [the observations, limits, and practical reductions](coding-agent-data-usage.md) without publishing private session logs or treating tokens as network bytes.
+
+Disconnecting the hotspot also exposed a separate bug: Automatic connection selection cleared the active interface, and history queries used that empty value. The saved records were still present but the dashboard displayed empty totals. The collector now keeps a persistent history interface separately from the current live connection. Disconnection clears live-rate baselines while preserving saved metrics; a restart without a network restores the last history selection. The UI states when it is showing offline history, and exports keep the correct interface label.
+
+Installation now opens the dashboard after checking that the local server is ready, while headless installations print the address. The README lists the Linux, architecture, library, desktop, and service requirements so the single-binary packaging is not mistaken for universal Linux compatibility.

@@ -10,7 +10,7 @@ My phone's hotspot report showed that my PC was using about 80% of my mobile dat
 
 Data Watch is currently for **Ubuntu Linux**. Windows and macOS support are future work because each operating system exposes network and desktop notification features differently.
 
-Read the [development story](docs/development-story.md) for the investigation that led to Data Watch and the problems the collector and interface had to solve.
+Read the [development story](docs/development-story.md) for the collector and interface challenges, and [our coding-agent bandwidth investigation](docs/coding-agent-data-usage.md) for why a day of agent-assisted coding approached 400 MB and what can help reduce it.
 
 ![Data Watch dashboard showing live throughput, connection selection, download and upload totals, and a usage timeline](https://raw.githubusercontent.com/benaiah-muga/data-watch/main/docs/assets/dashboard.png)
 
@@ -18,7 +18,7 @@ Read the [development story](docs/development-story.md) for the investigation th
 
 ## Install
 
-The Linux release is one executable plus a README, license notices, and the development story. The dashboard, font, favicon, and SQLite engine are embedded in the executable, so the installed application does not need a separate web server, database package, or static asset folder. The executable uses Ubuntu's system libraries and `ip`/`ss` commands. Desktop alerts use `notify-send` from `libnotify-bin`.
+The Linux release is one executable plus documentation and license notices. The dashboard, font, favicon, and SQLite engine are embedded in the executable, so the installed application does not need a separate web server, database package, or static asset folder. The executable uses Ubuntu's system libraries and `ip`/`ss` commands. Desktop alerts use `notify-send` from `libnotify-bin`.
 
 Download the ready-to-run **Ubuntu 22.04+ x86-64** archive from [GitHub Releases](https://github.com/benaiah-muga/data-watch/releases/latest). It contains the executable, documentation, and license notices; no Rust toolchain is needed to run it.
 
@@ -38,7 +38,7 @@ cargo build --release --locked
 ./target/release/data-watch install
 ```
 
-Or run `./install.sh`, which builds and installs the same release binary. The installer copies the executable to `~/.local/bin/data-watch`, creates a **Data Watch** application-menu entry with its own icon, installs a systemd user service, enables it at boot, and keeps it running after logout. The menu entry opens a standalone Chrome/Chromium-style app window when available, then falls back to your default browser. Usage history stays in `~/.local/share/data-watch/usage.sqlite3` with user-only permissions.
+Or run `./install.sh`, which builds and installs the same release binary. The installer copies the executable to `~/.local/bin/data-watch`, creates a **Data Watch** application-menu entry with its own icon, installs a systemd user service, enables it at boot, and keeps it running after logout. After a successful install in a graphical desktop session, the installer waits for the local dashboard and opens it automatically. The menu entry also opens a standalone Chrome/Chromium-style app window when available, then falls back to your default browser. In a headless or SSH-only session, installation prints the local URL instead of opening a browser. A browser launch failure does not undo monitoring installation. Usage history stays in `~/.local/share/data-watch/usage.sqlite3` with user-only permissions.
 
 Open <http://127.0.0.1:8765> or launch **Data Watch** from Applications. The monitor records without an open browser tab. The PC must be awake to collect traffic. System notifications appear when the graphical desktop session is available, including while the dashboard is closed.
 
@@ -48,6 +48,27 @@ For desktop alerts, install the Ubuntu notification command if it is not already
 sudo apt install libnotify-bin
 systemctl --user restart data-watch.service
 ```
+
+## Linux compatibility
+
+This is **not yet plug and play on every Linux machine**. The release targets Ubuntu 22.04+ on Intel/AMD x86-64. It has been exercised on the development Ubuntu PC, not certified across all Ubuntu releases or distributions.
+
+| Component | Requirement |
+| --- | --- |
+| Release executable | Linux x86-64, glibc 2.34 or newer, `libgcc_s`, and standard system libraries. SQLite is embedded. |
+| Always-on installation | systemd, a working user service manager, `loginctl`, and permission to enable user lingering. Run the installer as your ordinary desktop user. |
+| Collection | Readable Linux `/proc` and `/sys`, a physical network interface, and `ip`/`ss` from `iproute2`. Virtual-only container interfaces are not currently supported. |
+| Dashboard | A local browser. Chrome-family browsers support the app window; `xdg-open` provides the default-browser fallback. No internet is needed to view recorded history. |
+| Desktop alerts | A graphical notification session and `notify-send` (`libnotify-bin` on Ubuntu). Sound depends on the desktop notification settings. |
+| Full attribution | An administrator enables `data-watch full` separately. The desktop shortcut for that command uses `gnome-terminal`; other desktops can run it from their own terminal. |
+
+Other x86-64 distributions with these facilities may work but remain untested. ARM machines need a separate build; Alpine/musl and non-systemd setups are not supported by this installer. Building from source does not remove these operating-system integration requirements. Windows and macOS support are future work.
+
+## Offline history
+
+Use <http://127.0.0.1:8765> on the monitored PC, including after the hotspot is turned off. The UI, font, charts, and database are local. When no physical connection is active, live rates stop and the dashboard keeps showing the last watched interface's saved totals, programs, and history. It remembers that history selection across service restarts and resumes monitoring when you reconnect. History remains separated by network interface, rather than by Wi-Fi name.
+
+A phone or another PC cannot reach this loopback address. Data Watch currently serves only the machine on which it runs. If the local service is stopped, start it with `systemctl --user start data-watch.service`.
 
 ## What it shows
 

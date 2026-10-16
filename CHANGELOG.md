@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.1 - 2026-10-16
+
+### Fixed
+
+- Preserve saved totals, program history, and correctly labelled exports when the hotspot disconnects, including an offline service restart.
+
+### Added
+
+- Automatically open the local dashboard after a successful graphical installation, with a readiness check and a headless fallback.
+- Document Linux compatibility requirements and the coding-agent bandwidth investigation, its limits, and practical reduction steps.
+
 ## 1.3.0 - 2026-10-16
 
 ### Added

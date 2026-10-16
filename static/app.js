@@ -353,7 +353,7 @@
     state.signalHistory.push(totalRate);
     if (state.signalHistory.length > 12) state.signalHistory.shift();
     const signalState = $("signal-state");
-    signalState.textContent = totalRate > 0 ? "TRANSFERRING" : data.interface ? "IDLE" : "WAITING";
+    signalState.textContent = totalRate > 0 ? "TRANSFERRING" : data.interface ? "IDLE" : "OFFLINE";
     signalState.dataset.active = String(totalRate > 0);
     const peakRate = Math.max(1024, ...state.signalHistory);
     const bars = [...$("signal-bars").children];
@@ -381,7 +381,7 @@
         return label;
       }));
     }
-    set("connection-note", data.interface ? `Recording ${data.interface} locally` : "Waiting for an active connection");
+    set("connection-note", data.interface ? `Recording ${data.interface} locally` : data.history_interface ? `Offline · Showing saved history for ${data.history_interface}` : "Offline · Waiting for a connection; history is saved locally");
     const packetTracking = data.mode === "packet-capture" && data.capture && data.capture.active;
     const warning = packetTracking
       ? `Program monitoring: continuous TCP + UDP packet tracking. Short connections are captured; some sockets may still close before their program can be identified.${data.packet_tracking_since ? ` Enabled ${date(data.packet_tracking_since, true)}.` : ""}`

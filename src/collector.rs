@@ -28,6 +28,7 @@ struct SocketSample {
 
 struct State {
     interface: String,
+    history_interface: String,
     selection: String,
     cached_interface: String,
     last_interface_scan: f64,
@@ -60,6 +61,16 @@ pub struct Collector {
 
 impl Collector {
     pub fn start(store: Arc<Mutex<Store>>, data: PathBuf) -> Result<Arc<Self>, String> {
+        let collector = Self::new(store, data)?;
+        let running = Arc::clone(&collector);
+        thread::Builder::new()
+            .name("data-watch-collector".into())
+            .spawn(move || running.poll_loop())
+            .map_err(|e| format!("Cannot start collector thread: {e}"))?;
+        Ok(collector)
+    }
+
+    fn new(store: Arc<Mutex<Store>>, data: PathBuf) -> Result<Arc<Self>, String> {
         fs::create_dir_all(&data).map_err(|e| format!("Cannot create data directory: {e}"))?;
         let socket_path = data.join(CAPTURE_NAME);
         let _ = fs::remove_file(&socket_path);
@@ -71,7 +82,7 @@ impl Collector {
             .set_nonblocking(true)
             .map_err(|e| format!("Cannot configure capture socket: {e}"))?;
 
-        let (selection, alert_threshold_bytes, packet_tracking_since) = {
+        let (selection, history_interface, alert_threshold_bytes, packet_tracking_since) = {
             let store = store
                 .lock()
                 .map_err(|_| "Storage lock is unavailable.".to_string())?;
@@ -84,7 +95,12 @@ impl Collector {
                 .setting("packet_tracking_since", "0")?
                 .parse::<f64>()
                 .unwrap_or(0.0);
-            (selection, threshold, packet_since)
+            let history_interface = if selection == "auto" {
+                store.setting("history_interface", &store.latest_interface()?)?
+            } else {
+                selection.clone()
+            };
+            (selection, history_interface, threshold, packet_since)
         };
         if selection != "auto" && !is_physical_interface(&selection) {
             let mut locked = store
@@ -103,6 +119,7 @@ impl Collector {
             capture,
             state: Mutex::new(State {
                 interface: String::new(),
+                history_interface,
                 selection,
                 cached_interface: String::new(),
                 last_interface_scan: 0.0,
@@ -122,11 +139,6 @@ impl Collector {
                 started_at: now,
             }),
         });
-        let running = Arc::clone(&collector);
-        thread::Builder::new()
-            .name("data-watch-collector".into())
-            .spawn(move || running.poll_loop())
-            .map_err(|e| format!("Cannot start collector thread: {e}"))?;
         Ok(collector)
     }
 
@@ -141,7 +153,7 @@ impl Collector {
             .lock()
             .map_err(|_| "Storage lock is unavailable.".to_string())?;
         let database_size_bytes = store.size_bytes()?;
-        let mut result = store.history(period, &state.interface, now)?;
+        let mut result = store.history(period, &state.history_interface, now)?;
         drop(store);
         let obj = result
             .as_object_mut()
@@ -181,6 +193,7 @@ impl Collector {
         obj.insert("database_size_bytes".into(), json!(database_size_bytes));
         obj.insert("started_at".into(), json!(state.started_at));
         obj.insert("interface".into(), json!(state.interface));
+        obj.insert("history_interface".into(), json!(state.history_interface));
         obj.insert("interface_selection".into(), json!(state.selection));
         obj.insert("mode".into(), json!(state.mode));
         obj.insert("capture".into(), json!({"active":state.capture_accounting.active(now), "stats":state.capture_accounting.stats}));
@@ -219,15 +232,24 @@ impl Collector {
         if name != "auto" && !is_physical_interface(name) {
             return Err("Choose an available physical network connection.".into());
         }
-        self.store
-            .lock()
-            .map_err(|_| "Storage lock is unavailable.".to_string())?
-            .set_setting("interface", name)?;
+        {
+            let mut store = self
+                .store
+                .lock()
+                .map_err(|_| "Storage lock is unavailable.")?;
+            store.set_setting("interface", name)?;
+            if name != "auto" {
+                store.set_setting("history_interface", name)?;
+            }
+        }
         let mut state = self
             .state
             .lock()
             .map_err(|_| "Collector state is unavailable.".to_string())?;
         state.selection = name.to_string();
+        if name != "auto" {
+            state.history_interface = name.to_string();
+        }
         state.last_interface_scan = 0.0;
         state.previous_counters = None;
         state.previous_sockets = None;
@@ -309,21 +331,39 @@ impl Collector {
     }
 
     fn sample(&self, now: f64, elapsed: f64) -> Result<(), String> {
+        self.sample_with_interface(now, elapsed, |state| {
+            if state.selection == "auto" {
+                if now - state.last_interface_scan >= INTERFACE_REFRESH_SECONDS {
+                    state.cached_interface = default_interface();
+                    state.last_interface_scan = now;
+                }
+                state.cached_interface.clone()
+            } else if is_physical_interface(&state.selection)
+                && fs::read_to_string(
+                    Path::new("/sys/class/net")
+                        .join(&state.selection)
+                        .join("operstate"),
+                )
+                .is_ok_and(|value| value.trim() == "up")
+            {
+                state.selection.clone()
+            } else {
+                String::new()
+            }
+        })
+    }
+
+    fn sample_with_interface(
+        &self,
+        now: f64,
+        elapsed: f64,
+        choose: impl FnOnce(&mut State) -> String,
+    ) -> Result<(), String> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| "Collector state is unavailable.".to_string())?;
-        let chosen = if state.selection == "auto" {
-            if now - state.last_interface_scan >= INTERFACE_REFRESH_SECONDS {
-                state.cached_interface = default_interface();
-                state.last_interface_scan = now;
-            }
-            state.cached_interface.clone()
-        } else if is_physical_interface(&state.selection) {
-            state.selection.clone()
-        } else {
-            String::new()
-        };
+        let chosen = choose(&mut state);
         if chosen.is_empty() {
             state.interface.clear();
             state.local_addresses.clear();
@@ -339,6 +379,13 @@ impl Collector {
             return Ok(());
         }
         if state.interface != chosen {
+            if state.history_interface != chosen {
+                self.store
+                    .lock()
+                    .map_err(|_| "Storage lock is unavailable.")?
+                    .set_setting("history_interface", &chosen)?;
+                state.history_interface = chosen.clone();
+            }
             state.interface = chosen.clone();
             state.local_addresses = interface_addresses(&chosen);
             state.last_address_scan = now;
@@ -786,6 +833,71 @@ fn socket_deltas(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_history_survives_disconnect_and_restart_without_live_rates() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let data = std::env::temp_dir().join(format!("dw-offline-{unique}"));
+        let mut store = Store::open(&data.join("usage.sqlite3")).unwrap();
+        let now = unix_time();
+        store
+            .record(
+                now,
+                "saved-wifi",
+                1000,
+                200,
+                &HashMap::from([("editor".into(), (800, 100))]),
+            )
+            .unwrap();
+        let store = Arc::new(Mutex::new(store));
+        let collector = Collector::new(Arc::clone(&store), data.clone()).unwrap();
+        // Existing installations must find history without a new-version setting.
+        assert_eq!(collector.status("hour").unwrap()["totals"]["rx"], 1000);
+        {
+            let mut state = collector.state.lock().unwrap();
+            state.interface = "saved-wifi".into();
+            state.live = (123.0, 45.0);
+            state.rates.insert("editor".into(), (123.0, 45.0));
+            state.previous_counters = Some((1000, 200));
+        }
+        collector
+            .sample_with_interface(now, 2.0, |_| String::new())
+            .unwrap();
+        let offline = collector.status("hour").unwrap();
+        assert_eq!(offline["interface"], "");
+        assert_eq!(offline["history_interface"], "saved-wifi");
+        assert_eq!(offline["totals"], json!({"rx": 1000, "tx": 200}));
+        assert_eq!(offline["apps"][0]["name"], "editor");
+        assert_eq!(offline["apps"][0]["rx"], 800);
+        assert_eq!(offline["apps"][0]["rate_rx"], 0.0);
+        assert_eq!(offline["live"], json!({"rx": 0.0, "tx": 0.0}));
+        assert!(collector.state.lock().unwrap().previous_counters.is_none());
+        {
+            let mut db = store.lock().unwrap();
+            db.set_setting("history_interface", "saved-wifi").unwrap();
+            db.record(now + 120.0, "other-wifi", 9000, 8000, &HashMap::new())
+                .unwrap();
+        }
+        drop(collector);
+        drop(store);
+        let store = Arc::new(Mutex::new(
+            Store::open(&data.join("usage.sqlite3")).unwrap(),
+        ));
+        let restarted = Collector::new(Arc::clone(&store), data.clone()).unwrap();
+        restarted
+            .sample_with_interface(now, 2.0, |_| String::new())
+            .unwrap();
+        let saved = restarted.status("hour").unwrap();
+        assert_eq!(saved["history_interface"], "saved-wifi");
+        assert_eq!(saved["totals"], offline["totals"]);
+        assert_eq!(saved["series"], offline["series"]);
+        drop(restarted);
+        drop(store);
+        fs::remove_dir_all(data).unwrap();
+    }
 
     #[test]
     fn daily_alert_fires_once_after_crossing_and_retries_slowly() {

@@ -7,9 +7,10 @@ mod storage;
 
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
@@ -72,7 +73,10 @@ fn quoted_csv(value: &str) -> String {
 
 fn csv_response(value: &Value, period: &str) -> Response<io::Cursor<Vec<u8>>> {
     let mut csv = String::from("local_time,connection,program,download_bytes,upload_bytes\r\n");
-    let interface = value["interface"].as_str().unwrap_or("");
+    let interface = value["history_interface"]
+        .as_str()
+        .or_else(|| value["interface"].as_str())
+        .unwrap_or("");
     if let Some(series) = value["series"].as_array() {
         for slot in series {
             let ts = slot["ts"].as_i64().unwrap_or_default();
@@ -324,7 +328,40 @@ fn install() -> Result<(), String> {
     }
     println!("Installed. Open {URL} or launch Data Watch from Applications.");
     println!("Monitoring starts at boot, continues after logout, and restarts automatically.");
+    if ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty()))
+    {
+        if let Err(error) = open_dashboard() {
+            eprintln!(
+                "Monitoring is installed. {error} Open {URL} from Applications or your browser."
+            );
+        }
+    } else {
+        println!(
+            "No graphical session detected. Open {URL} in a browser on this PC when available."
+        );
+    }
     Ok(())
+}
+
+fn dashboard_ready(address: SocketAddr) -> bool {
+    let timeout = Duration::from_millis(250);
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(timeout)).is_err()
+        || stream.set_write_timeout(Some(timeout)).is_err()
+        || write!(
+            stream,
+            "GET /favicon.svg HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let mut status = [0; 12];
+    stream.read_exact(&mut status).is_ok() && &status == b"HTTP/1.1 200"
 }
 
 fn open_dashboard() -> Result<(), String> {
@@ -334,6 +371,15 @@ fn open_dashboard() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     if !result.success() {
         return Err("Could not start the Data Watch service.".into());
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    while !dashboard_ready(SocketAddr::from(([127, 0, 0, 1], PORT))) {
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Dashboard did not become ready at {URL}. Check data-watch.service."
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
     for browser in [
         "google-chrome-stable",
@@ -346,6 +392,9 @@ fn open_dashboard() -> Result<(), String> {
     ] {
         if Command::new(browser)
             .args(["--app=http://127.0.0.1:8765", "--class=DataWatch"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .is_ok()
         {
@@ -354,6 +403,9 @@ fn open_dashboard() -> Result<(), String> {
     }
     Command::new("xdg-open")
         .arg(URL)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("Could not open the Data Watch dashboard: {error}"))
@@ -418,5 +470,53 @@ fn main() {
     if let Err(error) = result {
         eprintln!("Data Watch: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn dashboard_readiness_requires_a_successful_http_response() {
+        for (response, expected) in [
+            ("HTTP/1.1 200 OK\r\n\r\n", true),
+            ("HTTP/1.1 503 Unavailable\r\n\r\n", false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                    assert!(request.len() < 512);
+                }
+                assert!(String::from_utf8_lossy(&request).contains("GET /favicon.svg"));
+                stream.write_all(response.as_bytes()).unwrap();
+            });
+            assert_eq!(dashboard_ready(address), expected);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn offline_export_labels_the_saved_interface() {
+        let response = csv_response(
+            &json!({
+                "interface": "", "history_interface": "saved-wifi",
+                "series": [{"ts": 120, "rx": 100, "tx": 20, "apps": []}]
+            }),
+            "today",
+        );
+        let mut csv = String::new();
+        response.into_reader().read_to_string(&mut csv).unwrap();
+        assert!(csv.contains("\"saved-wifi\",CONNECTION TOTAL,100,20"));
     }
 }

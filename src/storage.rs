@@ -150,6 +150,17 @@ impl Store {
         }
     }
 
+    pub fn latest_interface(&self) -> Result<String, String> {
+        let mut stmt = self.prepare(
+            "SELECT interface FROM (SELECT ts,interface FROM traffic UNION ALL SELECT day_ts AS ts,interface FROM traffic_daily) ORDER BY ts DESC,interface LIMIT 1",
+        )?;
+        if stmt.step()? == SQLITE_ROW {
+            Ok(stmt.text(0).unwrap_or_default())
+        } else {
+            Ok(String::new())
+        }
+    }
+
     pub fn set_setting(&mut self, key: &str, value: &str) -> Result<(), String> {
         let mut stmt = self.prepare("INSERT OR REPLACE INTO settings VALUES (?1,?2)")?;
         stmt.bind_text(1, key)?;
@@ -659,6 +670,21 @@ mod tests {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    }
+
+    #[test]
+    fn latest_interface_falls_back_to_archived_history() {
+        let (mut db, path) = store();
+        assert_eq!(db.latest_interface().unwrap(), "");
+        db.record(120.0, "old-wifi", 100, 20, &HashMap::new())
+            .unwrap();
+        db.prune(40.0 * 86400.0).unwrap();
+        assert_eq!(db.latest_interface().unwrap(), "old-wifi");
+        db.record(40.0 * 86400.0, "new-wifi", 200, 30, &HashMap::new())
+            .unwrap();
+        assert_eq!(db.latest_interface().unwrap(), "new-wifi");
+        drop(db);
+        cleanup(&path);
     }
 
     #[test]
