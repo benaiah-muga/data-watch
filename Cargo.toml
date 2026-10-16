@@ -1,6 +1,6 @@
 [package]
 name = "data-watch"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "A small local Ubuntu network and memory monitor"
 license = "Apache-2.0"

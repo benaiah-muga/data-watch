@@ -243,9 +243,15 @@ def main():
         client.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})
         client.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})
         assert not client.evaluate("document.querySelector('#app-history-panel').open")
+        deadline = time.time() + 2
+        while time.time() < deadline and client.evaluate("document.activeElement.dataset.program") != "browser-demo":
+            time.sleep(.05)
         assert client.evaluate("document.activeElement.dataset.program") == "browser-demo"
-        client.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13})
+        client.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "text": "\r"})
         client.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13})
+        deadline = time.time() + 2
+        while time.time() < deadline and not client.evaluate("document.querySelector('#app-history-panel').open"):
+            time.sleep(.05)
         assert client.evaluate("document.querySelector('#app-history-panel').open")
         client.evaluate("document.querySelector('#close-app-history').click()")
         client.evaluate("(() => { document.querySelector('#alert-enabled').checked=true; document.querySelector('#alert-limit').value='0.5'; document.querySelector('#alert-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})); })()")
@@ -263,7 +269,7 @@ def main():
         capture_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         frame = {"version": 2, "session": "browser-check", "sequence": 1, "ts": time.time(), "interface": interface, "apps": {}, "stats": {"dropped_packets": 0}}
         capture_socket.sendto(json.dumps(frame).encode(), str(data / "capture.sock"))
-        deadline = time.time() + 5
+        deadline = time.time() + 10
         while time.time() < deadline and not client.evaluate("document.querySelector('#mode-notice').textContent.includes('continuous TCP + UDP')"):
             time.sleep(.1)
         assert client.evaluate("document.querySelector('#mode-notice').textContent.includes('continuous TCP + UDP')")
@@ -289,7 +295,46 @@ def main():
             time.sleep(.1)
         assert client.evaluate("document.querySelector('#mode-notice').textContent.includes('Limited program monitoring') && !document.querySelector('#tracking-help').hidden")
         capture_socket.close()
-        print("BROWSER_CHECKS_PASS: capture and fallback mode, interface radios, Matrix canvas, live signal, directional shares, app history, alerts, responsive layout, no JavaScript exceptions")
+        victim_binary = root / "dwsleep-check"
+        shutil.copy("/usr/bin/sleep", victim_binary)
+        victim = subprocess.Popen([str(victim_binary), "60"])
+        try:
+            client.evaluate("document.querySelector('#memory-tab').click()")
+            assert not client.evaluate("document.querySelector('#memory-view').hidden")
+            client.evaluate("document.querySelector('#memory-show-more').click()")
+            deadline = time.time() + 15
+            listed = False
+            while time.time() < deadline:
+                listed = client.evaluate("(() => { const b=[...document.querySelectorAll('#memory-programs .program-name')]; return b.some(x=>x.textContent==='dwsleep-check'); })()")
+                if listed:
+                    break
+                time.sleep(.2)
+            assert listed, "memory sampling did not list the spawned stop-test process"
+            client.evaluate("(() => { const b=[...document.querySelectorAll('#memory-programs .program-name')].find(x=>x.textContent==='dwsleep-check'); b.closest('tr').click(); })()")
+            controls = client.evaluate(f"(() => {{ const row=document.querySelector('#memory-process-list tr[data-pid=\"{victim.pid}\"]'); return {{open:document.querySelector('#memory-program-dialog').open,hidden:document.querySelector('#memory-process-section').hidden,row:Boolean(row),label:row&&row.querySelector('.process-stop')&&row.querySelector('.process-stop').textContent}}; }})()")
+            assert controls["open"] and not controls["hidden"] and controls["row"] and controls["label"] == "Stop", controls
+            client.evaluate(f"document.querySelector('#memory-process-list tr[data-pid=\"{victim.pid}\"] .process-stop').click()")
+            assert victim.poll() is None, "the first stop click must not signal the process"
+            assert client.evaluate(f"document.querySelector('#memory-process-list tr[data-pid=\"{victim.pid}\"] .process-stop').textContent") == "Confirm stop"
+            client.evaluate(f"document.querySelector('#memory-process-list tr[data-pid=\"{victim.pid}\"] .process-stop').click()")
+            deadline = time.time() + 5
+            while time.time() < deadline and victim.poll() is None:
+                time.sleep(.05)
+            assert victim.poll() is not None, "the process did not exit after the confirmed SIGTERM"
+            deadline = time.time() + 5
+            message = ""
+            while time.time() < deadline:
+                message = client.evaluate("document.querySelector('#memory-process-message').textContent")
+                if "SIGTERM" in message:
+                    break
+                time.sleep(.1)
+            assert "SIGTERM" in message, message
+            client.evaluate("document.querySelector('#memory-program-close').click()")
+        finally:
+            if victim.poll() is None:
+                victim.kill()
+                victim.wait(timeout=5)
+        print("BROWSER_CHECKS_PASS: capture and fallback mode, interface radios, Matrix canvas, live signal, directional shares, app history, alerts, responsive layout, memory process stop, no JavaScript exceptions")
     finally:
         if client:
             client.close()

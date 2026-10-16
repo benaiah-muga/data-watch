@@ -45,7 +45,7 @@
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (id, message) => { set(id, message); $(id).hidden = !message; };
 
-  const memoryState = { range: "hour", data: null, selected: null, expanded: false, program: null, returnProgram: null };
+  const memoryState = { range: "hour", data: null, selected: null, expanded: false, program: null, returnProgram: null, confirmPid: null, killBusy: false, processMessage: "" };
   const percentage = (value, total) => total > 0 ? `${(number(value) / total * 100).toFixed(1)}%` : "0.0%";
   const pressureText = (value) => value == null ? "Unavailable" : `${number(value).toFixed(2)}%`;
 
@@ -65,6 +65,76 @@
     set("memory-program-scope", memoryState.selected == null ? "Latest sample. Values update while this card is open." : "Peaks in the selected interval. RAM, swap, and process-count peaks may occur at different times.");
     const total = memoryState.data?.live?.total;
     set("memory-program-share", row && total ? `${percentage(row.rss, total)} of current physical RAM (RSS estimate, including shared pages).` : "Program samples may be missing when a process exits or cannot be read.");
+    const live = memoryState.selected == null;
+    $("memory-process-section").hidden = !live;
+    if (!live) return;
+    const processes = Array.isArray(row?.pids) ? row.pids : [];
+    const scroll = $("memory-process-scroll");
+    const focusedPid = scroll.contains(document.activeElement) ? document.activeElement.closest("tr")?.dataset.pid : null;
+    $("memory-process-list").replaceChildren(...processes.map((item) => {
+      const tr = document.createElement("tr");
+      tr.dataset.pid = String(item.pid);
+      const pid = document.createElement("td");
+      pid.className = "process-pid";
+      pid.textContent = `PID ${item.pid}`;
+      tr.append(pid);
+      for (const value of [bytes(item.rss), bytes(item.swap)]) {
+        const td = document.createElement("td");
+        td.className = "numeric";
+        td.textContent = value;
+        tr.append(td);
+      }
+      const action = document.createElement("td");
+      action.className = "process-action";
+      if (item.own === false) {
+        const note = document.createElement("span");
+        note.className = "muted";
+        note.textContent = "Another user";
+        action.append(note);
+      } else {
+        const confirming = memoryState.confirmPid === item.pid;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "process-stop";
+        button.dataset.confirm = String(confirming);
+        button.textContent = confirming ? "Confirm stop" : "Stop";
+        button.disabled = memoryState.killBusy;
+        button.setAttribute("aria-label", confirming ? `Confirm stopping process ${item.pid}` : `Stop process ${item.pid} with SIGTERM`);
+        button.addEventListener("click", () => {
+          if (memoryState.confirmPid !== item.pid) {
+            memoryState.confirmPid = item.pid;
+            memoryState.processMessage = "";
+            renderMemoryProgram();
+          } else {
+            stopProcess(item.pid);
+          }
+        });
+        action.append(button);
+      }
+      tr.append(action);
+      return tr;
+    }));
+    if (focusedPid) [...$("memory-process-list").children].find((item) => item.dataset.pid === focusedPid)?.querySelector("button")?.focus({ preventScroll: true });
+    set("memory-process-message", memoryState.processMessage || (processes.length ? "" : "No readable processes in this group right now."));
+  }
+
+  async function stopProcess(pid) {
+    const name = memoryState.program;
+    memoryState.killBusy = true;
+    memoryState.confirmPid = null;
+    renderMemoryProgram();
+    try {
+      const response = await fetch("/api/processes/kill", { method: "POST", headers: { "Content-Type": "application/json", "X-Data-Watch": "1" }, body: JSON.stringify({ pid, name }), signal: AbortSignal.timeout(10000) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      memoryState.processMessage = `Sent SIGTERM to process ${pid}. It may take a moment to exit and release memory.`;
+      refresh();
+    } catch (error) {
+      memoryState.processMessage = `Could not stop process ${pid}: ${error.message}.`;
+    } finally {
+      memoryState.killBusy = false;
+      renderMemoryProgram();
+    }
   }
 
   function renderMemory(data) {
@@ -167,6 +237,8 @@
       tr.addEventListener("click", () => {
         memoryState.program = row.name;
         memoryState.returnProgram = row.name;
+        memoryState.confirmPid = null;
+        memoryState.processMessage = "";
         renderMemoryProgram();
         if (!$("memory-program-dialog").open) {
           document.body.classList.add("dialog-open");
@@ -227,6 +299,11 @@
   $("memory-program-close").addEventListener("click", () => $("memory-program-dialog").close());
   $("memory-program-dialog").addEventListener("close", () => {
     memoryState.program = null;
+    memoryState.confirmPid = null;
+    memoryState.processMessage = "";
+    $("memory-process-section").hidden = true;
+    $("memory-process-list").replaceChildren();
+    set("memory-process-message", "");
     document.body.classList.remove("dialog-open");
     const row = [...$("memory-programs").children].find((item) => item.dataset.memoryProgram === memoryState.returnProgram);
     (row?.querySelector("button") || $("memory-tab")).focus({ preventScroll: true });

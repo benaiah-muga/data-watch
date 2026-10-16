@@ -849,6 +849,7 @@ mod tests {
                 rss: 100,
                 swap: 50,
                 processes: 2,
+                pids: Vec::new(),
             }],
             unreadable_processes: 0,
         };

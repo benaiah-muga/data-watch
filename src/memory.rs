@@ -4,11 +4,20 @@ use std::fs;
 use std::path::Path;
 
 #[derive(Clone, Debug)]
+pub struct Process {
+    pub pid: u32,
+    pub rss: u64,
+    pub swap: u64,
+    pub own: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct Program {
     pub name: String,
     pub rss: u64,
     pub swap: u64,
     pub processes: u64,
+    pub pids: Vec<Process>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,18 +79,34 @@ fn counters(text: &str, page_size: u64) -> (Option<u64>, Option<u64>, Option<u64
     )
 }
 
-fn program(text: &str) -> Option<Program> {
+fn uid(text: &str) -> Option<u32> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn program(pid: u32, euid: u32, text: &str) -> Option<Program> {
     let name = text
         .lines()
         .find_map(|line| line.strip_prefix("Name:"))?
         .trim();
     let values = kb_values(text);
     let rss = *values.get("VmRSS")?;
+    let swap = values.get("VmSwap").copied().unwrap_or(0);
     Some(Program {
         name: name.to_owned(),
         rss,
-        swap: values.get("VmSwap").copied().unwrap_or(0),
+        swap,
         processes: 1,
+        pids: vec![Process {
+            pid,
+            rss,
+            swap,
+            own: uid(text) == Some(euid),
+        }],
     })
 }
 
@@ -124,32 +149,35 @@ impl Sample {
                 .map(|(a, b)| a.saturating_sub(b))
                 .unwrap_or(0)
         };
+        let euid = unsafe { libc::geteuid() };
         let mut groups: HashMap<String, Program> = HashMap::new();
         let mut unreadable_processes = 0;
         for entry in fs::read_dir(root)
             .map_err(|e| format!("Read process list: {e}"))?
             .flatten()
         {
-            if !entry
-                .file_name()
-                .to_string_lossy()
-                .bytes()
-                .all(|b| b.is_ascii_digit())
-            {
+            let directory = entry.file_name();
+            let name = directory.to_string_lossy();
+            if !name.bytes().all(|b| b.is_ascii_digit()) {
                 continue;
             }
+            let Ok(pid) = name.parse::<u32>() else {
+                continue;
+            };
             match fs::read_to_string(entry.path().join("status")) {
                 Ok(text) => {
-                    if let Some(item) = program(&text) {
+                    if let Some(item) = program(pid, euid, &text) {
                         let group = groups.entry(item.name.clone()).or_insert(Program {
                             name: item.name,
                             rss: 0,
                             swap: 0,
                             processes: 0,
+                            pids: Vec::new(),
                         });
                         group.rss = group.rss.saturating_add(item.rss);
                         group.swap = group.swap.saturating_add(item.swap);
                         group.processes += 1;
+                        group.pids.extend(item.pids);
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -157,6 +185,11 @@ impl Sample {
                 }
                 Err(_) => {} // A process may exit between listing and reading it.
             }
+        }
+        for group in groups.values_mut() {
+            group
+                .pids
+                .sort_by(|a, b| b.rss.cmp(&a.rss).then_with(|| a.pid.cmp(&b.pid)));
         }
         let mut programs: Vec<_> = groups.into_values().collect();
         programs.sort_by(|a, b| b.rss.cmp(&a.rss).then_with(|| a.name.cmp(&b.name)));
@@ -208,7 +241,8 @@ impl Sample {
             "paging_available": self.swap_in_total.is_some() && self.swap_out_total.is_some(),
             "oom_total": self.oom_total, "oom_kills": self.oom_kills, "status": status,
             "unreadable_processes": self.unreadable_processes,
-            "programs": self.programs.iter().map(|p| json!({"name":p.name,"rss":p.rss,"swap":p.swap,"processes":p.processes})).collect::<Vec<_>>()
+            "programs": self.programs.iter().map(|p| json!({"name":p.name,"rss":p.rss,"swap":p.swap,"processes":p.processes,
+                "pids":p.pids.iter().map(|process| json!({"pid":process.pid,"rss":process.rss,"swap":process.swap,"own":process.own})).collect::<Vec<_>>()})).collect::<Vec<_>>()
         })
     }
 }
@@ -246,11 +280,12 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("vmstat"), "pswpin 100\npswpout 200\noom_kill 3").unwrap();
-        for (pid, rss) in [(10, 100), (11, 200)] {
+        let euid = unsafe { libc::geteuid() };
+        for (pid, rss, uid) in [(10, 100, euid), (11, 200, euid.wrapping_add(1))] {
             fs::create_dir(dir.join(pid.to_string())).unwrap();
             fs::write(
                 dir.join(pid.to_string()).join("status"),
-                format!("Name:\teditor\nVmRSS: {rss} kB\nVmSwap: 10 kB\n"),
+                format!("Name:\teditor\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\nVmRSS: {rss} kB\nVmSwap: 10 kB\n"),
             )
             .unwrap();
         }
@@ -262,6 +297,12 @@ mod tests {
         assert_eq!(first.programs.len(), 1);
         assert_eq!(first.programs[0].rss, 300 * 1024);
         assert_eq!(first.programs[0].processes, 2);
+        assert_eq!(first.programs[0].pids.len(), 2);
+        assert_eq!(first.programs[0].pids[0].pid, 11);
+        assert_eq!(first.programs[0].pids[0].rss, 200 * 1024);
+        assert!(!first.programs[0].pids[0].own);
+        assert_eq!(first.programs[0].pids[1].pid, 10);
+        assert!(first.programs[0].pids[1].own);
         fs::write(dir.join("vmstat"), "pswpin 110\npswpout 220\noom_kill 4").unwrap();
         let next = Sample::read(&dir, 106.0, Some(&first)).unwrap();
         assert_eq!(next.oom_kills, 1);

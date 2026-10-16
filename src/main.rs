@@ -4,6 +4,7 @@ mod collector;
 mod memory;
 mod ownership;
 mod packet;
+mod process;
 mod storage;
 
 use serde_json::{json, Value};
@@ -144,6 +145,13 @@ fn header(request: &tiny_http::Request, key: &str) -> Option<String> {
         .map(|h| h.value.as_str().to_owned())
 }
 
+fn local_dashboard_request(request: &tiny_http::Request, host: &str) -> bool {
+    let same_origin = header(request, "Origin")
+        .map(|origin| origin == format!("http://{host}"))
+        .unwrap_or(true);
+    same_origin && header(request, "X-Data-Watch").as_deref() == Some("1")
+}
+
 fn serve_http(collector: Arc<collector::Collector>, port: u16) -> Result<(), String> {
     let server = Server::http(("127.0.0.1", port))
         .map_err(|e| format!("Could not listen on localhost: {e}"))?;
@@ -207,11 +215,7 @@ fn serve_http(collector: Arc<collector::Collector>, port: u16) -> Result<(), Str
                 _ => json_response(404, json!({"error":"Not found."})),
             }
         } else if method == Method::Post && url == "/api/interface" {
-            let same_origin = header(&request, "Origin")
-                .map(|o| o == format!("http://{host}"))
-                .unwrap_or(true);
-            let custom_header = header(&request, "X-Data-Watch").as_deref() == Some("1");
-            if !same_origin || !custom_header {
+            if !local_dashboard_request(&request, &host) {
                 json_response(403, json!({"error":"Local dashboard requests only."}))
             } else {
                 let mut body = String::new();
@@ -235,11 +239,7 @@ fn serve_http(collector: Arc<collector::Collector>, port: u16) -> Result<(), Str
                 }
             }
         } else if method == Method::Post && (url == "/api/alerts" || url == "/api/alerts/test") {
-            let same_origin = header(&request, "Origin")
-                .map(|o| o == format!("http://{host}"))
-                .unwrap_or(true);
-            let custom_header = header(&request, "X-Data-Watch").as_deref() == Some("1");
-            if !same_origin || !custom_header {
+            if !local_dashboard_request(&request, &host) {
                 json_response(403, json!({"error":"Local dashboard requests only."}))
             } else if url == "/api/alerts/test" {
                 match collector.test_notification() {
@@ -264,6 +264,41 @@ fn serve_http(collector: Arc<collector::Collector>, port: u16) -> Result<(), Str
                                 400,
                                 json!({"error":"Choose an alert limit from 0 to 1 TiB."}),
                             ),
+                        }
+                    }
+                    _ => json_response(400, json!({"error":"Invalid request size."})),
+                }
+            }
+        } else if method == Method::Post && url == "/api/processes/kill" {
+            if !local_dashboard_request(&request, &host) {
+                json_response(403, json!({"error":"Local dashboard requests only."}))
+            } else {
+                let mut body = String::new();
+                match request.as_reader().take(1025).read_to_string(&mut body) {
+                    Ok(count) if count > 0 && count <= 1024 => {
+                        match serde_json::from_str::<Value>(&body) {
+                            Ok(value) => {
+                                let pid = value
+                                    .get("pid")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|pid| u32::try_from(pid).ok());
+                                let name = value.get("name").and_then(Value::as_str);
+                                match pid.zip(name) {
+                                    Some((pid, name)) => {
+                                        match process::terminate_own_process(pid, name) {
+                                            Ok(()) => json_response(200, json!({"ok":true})),
+                                            Err(error) => {
+                                                json_response(409, json!({"error":error}))
+                                            }
+                                        }
+                                    }
+                                    None => json_response(
+                                        400,
+                                        json!({"error":"Choose a process to stop."}),
+                                    ),
+                                }
+                            }
+                            Err(_) => json_response(400, json!({"error":"Invalid JSON."})),
                         }
                     }
                     _ => json_response(400, json!({"error":"Invalid request size."})),

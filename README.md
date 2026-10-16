@@ -8,7 +8,7 @@
 
 My phone's hotspot report showed that my PC was using about 80% of my mobile data. I was mostly using Codex in VS Code and searching the web, so I wanted a small tool that could answer two questions: when is the data being used, and which programs can be tied to it? Data Watch records connection totals and best-effort program estimates locally, then shows them in a private dashboard.
 
-Data Watch also includes a **Memory** tab for investigating slowdowns with RAM, swap, memory pressure, and program memory history.
+Data Watch also includes a **Memory** tab for investigating slowdowns with RAM, swap, memory pressure, and program memory history, with a confirmed SIGTERM stop for your own runaway processes.
 
 Data Watch is currently for **Ubuntu Linux**. Windows and macOS support are future work because each operating system exposes network and desktop notification features differently.
 
@@ -96,13 +96,14 @@ Open the **Memory** tab, or go directly to <http://127.0.0.1:8765/#memory>. It u
 - Live physical RAM use, available RAM, swap use, directional swap paging rates, and Linux memory pressure (PSI).
 - Kernel OOM-kill counters since boot and new kills observed between samples. This does not identify the killed process or include every desktop/application termination.
 - Programs grouped by Linux process name, ranked by resident memory (RSS), with swap and process counts. Select any row for details. Ten groups appear initially; expand the list to scroll through more.
+- The live program details card lists the individual processes in the group with their PID, RSS, and swap. Each process owned by your user account has a two-step **Stop** control that sends SIGTERM only after you confirm on a second click. Processes owned by other users are labelled and cannot be stopped from the dashboard.
 - Selectable history for the last hour (five-minute bars), today (15-minute bars), and seven days (one bar per day). Selecting a bar shows interval peaks and the largest recorded programs; **Return to live** restores current readings.
 
 The collector reads `/proc/meminfo`, `/proc/pressure/memory`, `/proc/vmstat`, and readable `/proc/<pid>/status` files every six seconds, even while the dashboard is closed or the hotspot is disconnected. Memory snapshots are summarized by minute. Program history retains peak RSS, swap, and process counts for the 20 largest groups in each sample, grouped into five-minute windows. Both are retained for 30 days in the same private SQLite database; memory history begins when this version is installed. Missing samples remain gaps. Historical RAM, swap, pressure, and program peaks are not necessarily simultaneous.
 
 RAM in use means total minus Linux's available-memory estimate, which includes reclaimable memory. The separate cache estimate is informational, not an extra amount to add to RAM use. If `MemAvailable` is missing, a labelled fallback estimate is used. PSI shows the percentage of time tasks stalled for memory, not a percentage of RAM occupied. Missing PSI or paging counters are reported as unavailable.
 
-The interface highlights low headroom (90% or 95% RAM use), elevated PSI (`some` at 5%/20%, or `full` at 1%/5%), and newly observed kernel OOM kills. These are explanatory heuristics, not a diagnosis or a universal freeze threshold. High cached memory is not automatically a fault. CPU load, disk waits, graphics drivers, and application faults can also cause freezes. This feature only observes; it does not stop programs, clear caches, resize swap, or change system settings.
+The interface highlights low headroom (90% or 95% RAM use), elevated PSI (`some` at 5%/20%, or `full` at 1%/5%), and newly observed kernel OOM kills. These are explanatory heuristics, not a diagnosis or a universal freeze threshold. High cached memory is not automatically a fault. CPU load, disk waits, graphics drivers, and application faults can also cause freezes. Apart from the confirmed per-process **Stop** control in the live details card, the feature only observes; it does not clear caches, resize swap, or change system settings.
 
 RSS readings are lightweight estimates and can double-count shared pages across processes. Their sum need not equal system RAM use, and a large program row alone does not establish a memory leak. Short spikes can fall between samples; collection cannot run while the PC is suspended. Names are Linux process names, which may be truncated, and protected processes may be unreadable. We deliberately avoid the heavier per-mapping scans needed for proportional set size (PSS).
 
@@ -132,7 +133,7 @@ sudo rm "/etc/systemd/system/data-watch-capture-$(id -u).service" "/usr/local/li
 sudo systemctl daemon-reload
 ```
 
-Recorded history contains timestamps, connection names, program names, network byte counts, and aggregate memory/paging/pressure measurements. Memory history includes grouped resident memory, swap, and process-count peaks; process IDs are not saved. Data Watch does not save URLs, remote addresses, command arguments, or packet contents. It makes no analytics or cloud requests. Desktop alerts use the local Linux notification service.
+Recorded history contains timestamps, connection names, program names, network byte counts, and aggregate memory/paging/pressure measurements. Memory history includes grouped resident memory, swap, and process-count peaks; process IDs and owners are read live for the program dialog and are not saved. Data Watch does not save URLs, remote addresses, command arguments, or packet contents. It makes no analytics or cloud requests. Desktop alerts use the local Linux notification service.
 
 ## Manage the service
 
@@ -149,7 +150,7 @@ For an isolated foreground run:
 DATA_WATCH_DATA=/tmp/data-watch-test DATA_WATCH_PORT=8876 ./target/release/data-watch serve
 ```
 
-Only one collector can use a history directory. The HTTP server listens on loopback, rejects unexpected Host headers, and requires a custom header for settings changes. No firewall changes are needed.
+Only one collector can use a history directory. The HTTP server listens on loopback, rejects unexpected Host headers, and requires a custom header and matching origin for settings changes and process stops. A stop request is limited to processes owned by the user running the monitor. No firewall changes are needed.
 
 To remove the system integration while preserving history and the project:
 

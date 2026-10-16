@@ -102,9 +102,39 @@ async function main() {
     assert.strictEqual(memory.series.length, 12, "last-hour memory history must use five-minute windows");
     assert(memory.series.some((row) => row.samples > 0), "memory history was not persisted");
     assert(memory.live.programs.length > 0, "program memory list is empty");
+    assert(memory.live.programs.every((program) => program.pids.length > 0), "live programs must expose process IDs");
+    assert(memory.live.programs.every((program) => program.pids.every((item) => typeof item.own === "boolean")), "process IDs must report ownership");
     assert.strictEqual(JSON.parse((await request(port, "/api/memory?range=week")).body).series.length, 7);
     assert.strictEqual((await request(port, "/api/memory?range=years")).status, 400);
     assert(page.body.includes('role="tab" id="memory-tab"') && js.body.includes("renderMemory"), "embedded memory UI is missing");
+    const victim = spawn("sleep", ["30"], { stdio: "ignore" });
+    try {
+      const victimName = () => {
+        try {
+          return fs.readFileSync(`/proc/${victim.pid}/status`, "utf8").split("\n").find((line) => line.startsWith("Name:"));
+        } catch (_) {
+          return null;
+        }
+      };
+      const startDeadline = Date.now() + 5000;
+      while (victimName() !== "Name:\tsleep" && Date.now() < startDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.strictEqual(victimName(), "Name:\tsleep", "spawned process did not start");
+      const wrongName = await request(port, "/api/processes/kill", "POST", { pid: victim.pid, name: "definitely-not-sleep" });
+      assert.strictEqual(wrongName.status, 409, "a process that changed since the sample must be rejected");
+      assert.strictEqual(victim.exitCode, null, "a name mismatch must not stop the process");
+      const invalid = await request(port, "/api/processes/kill", "POST", { pid: 0, name: "init" });
+      assert.strictEqual(invalid.status, 409, "an invalid PID must be rejected");
+      const stop = await request(port, "/api/processes/kill", "POST", { pid: victim.pid, name: "sleep" });
+      assert.strictEqual(stop.status, 200, `stop request failed: ${stop.body}`);
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("process ignored SIGTERM")), 5000);
+        victim.once("exit", () => { clearTimeout(timer); resolve(); });
+      });
+    } finally {
+      if (victim.exitCode === null) victim.kill("SIGKILL");
+    }
     assert.strictEqual(statusValue.alerts.notifications_available, true, "notification command stub was not detected");
     const save = await request(port, "/api/alerts", "POST", { threshold_bytes: 536870912 });
     assert.strictEqual(save.status, 200, "could not save alert setting");

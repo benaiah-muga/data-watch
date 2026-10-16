@@ -312,6 +312,18 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 4px 
 #memory-view .metric.total strong { font-size: 29px; }
 #memory-view .metric>span { overflow-wrap: anywhere; }
 #memory-program-dialog .history-totals { margin: 20px 0; }
+.process-section { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 16px; }
+.process-section h3 { margin: 4px 0 8px; font-size: 15px; letter-spacing: -.2px; }
+.process-note { font-size: 11px; }
+.process-scroll { max-height: 230px; margin-top: 12px; }
+.process-scroll table { width: 100%; }
+.process-pid { color: var(--green-bright); font: 12px var(--mono); }
+.process-action { text-align: right; white-space: nowrap; }
+.process-action .muted { font-size: 10px; }
+.process-stop { border-color: #75403b; color: var(--red); background: transparent; font-size: 10px; padding: 5px 10px; }
+.process-stop:hover { border-color: var(--red); background: #ff777714; }
+.process-stop[data-confirm="true"] { border-color: var(--red); background: #ff77771f; color: #ffb3b3; }
+.process-message { min-height: 17px; margin-top: 10px; font-size: 11px; color: var(--muted); }
 @media (max-width: 700px) {
   .memory-timeline-panel>.section-heading { align-items: flex-start; flex-direction: column; gap: 12px; }
   .memory-heading { align-items: flex-start; flex-wrap: wrap; gap: 12px; }

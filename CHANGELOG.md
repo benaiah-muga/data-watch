@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0 - 2026-10-17
+
+### Added
+
+- The live program details card lists each process in the group with its PID, RAM, and swap, and can send SIGTERM to one of your own processes after a two-step confirmation.
+- Processes owned by other users are labelled and cannot be stopped from the dashboard.
+
 ## 1.4.0 - 2026-10-16
 
 ### Added
