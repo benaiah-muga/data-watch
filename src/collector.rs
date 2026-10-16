@@ -514,7 +514,9 @@ fn send_desktop_notification(title: &str, message: &str) -> Result<(), String> {
     let result = Command::new("notify-send")
         .args([
             "--app-name=Data Watch",
+            "--urgency=critical",
             "--expire-time=15000",
+            "--hint=string:sound-name:alarm-clock-elapsed",
             title,
             message,
         ])

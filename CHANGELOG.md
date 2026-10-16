@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0 - 2026-10-16
+
+### Added
+
+- A public development story documenting the hotspot investigation, attribution limits, and design choices.
+- A prominent live local-time card in the dashboard header, including the system timezone.
+- A selected timeline interval updates connection totals and direction percentages, with a Return to today control for the current readings.
+- Daily data alerts and test notifications request the desktop theme's alarm sound.
+
 ## 1.0.0 - 2026-10-16
 
 ### Fixed

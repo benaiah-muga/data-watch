@@ -4,11 +4,13 @@ My phone's hotspot report showed that my PC was using about 80% of my mobile dat
 
 Data Watch is currently for **Ubuntu Linux**. Windows and macOS support are future work because each operating system exposes network and desktop notification features differently.
 
+Read the [development story](docs/development-story.md) for the investigation that led to Data Watch and the problems the collector and interface had to solve.
+
 ## Install
 
-The Linux release is one executable. The dashboard, font, favicon, and SQLite engine are embedded in it, so the installed application does not need a separate web server, database package, or static asset folder. The executable uses Ubuntu's system libraries and `ip`/`ss` commands. Desktop alerts use `notify-send` from `libnotify-bin`.
+The Linux release is one executable plus a README, license notices, and the development story. The dashboard, font, favicon, and SQLite engine are embedded in the executable, so the installed application does not need a separate web server, database package, or static asset folder. The executable uses Ubuntu's system libraries and `ip`/`ss` commands. Desktop alerts use `notify-send` from `libnotify-bin`.
 
-Download the ready-to-run **Ubuntu 22.04+ x86-64** archive from [GitHub Releases](https://github.com/benaiah-muga/data-watch/releases/latest). It contains one executable plus license notices; no Rust toolchain is needed to run it.
+Download the ready-to-run **Ubuntu 22.04+ x86-64** archive from [GitHub Releases](https://github.com/benaiah-muga/data-watch/releases/latest). It contains the executable, documentation, and license notices; no Rust toolchain is needed to run it.
 
 ```sh
 curl -fLO https://github.com/benaiah-muga/data-watch/releases/latest/download/data-watch-linux-x86_64.tar.gz
@@ -41,11 +43,13 @@ systemctl --user restart data-watch.service
 
 - Connection totals for today, the last hour, or seven days, with downloads and uploads separated.
 - Download and upload cards show each direction's share of the selected period.
+- The dashboard header shows local time and timezone beside current throughput and connection status.
+- Selecting a timeline bar updates the summary and program list to that interval. Use **Return to today** to reload the current readings.
 - Choose a network connection with accessible radio buttons in the live header.
 - A live throughput meter in the header and a low-contrast Matrix-style background that stays behind the dashboard content.
 - A timeline of usage. Select a period to inspect its attributed programs.
 - Program totals and current rates. Select a program to see its usage history over the chosen period.
-- A configurable daily data limit. Data Watch sends one Linux desktop notification per day when the selected connection reaches it. Use **Send test** to check notifications.
+- A configurable daily data limit. Data Watch sends one Linux desktop notification with the system alarm sound per day when the selected connection reaches it. Use **Send test** to check notifications and sound.
 - CSV export for further analysis.
 
 Times use the PC's local timezone and sizes use binary units (MiB, GiB). The collector samples every two seconds, stores data by minute, and keeps 30 days.

@@ -12,6 +12,8 @@ mkdir -p "$release_dir/$package_name"
 cp target/release/data-watch "$release_dir/$package_name/data-watch"
 chmod 755 "$release_dir/$package_name/data-watch"
 cp LICENSE README.md THIRD_PARTY_NOTICES.md "$release_dir/$package_name/"
+mkdir -p "$release_dir/$package_name/docs"
+cp docs/development-story.md "$release_dir/$package_name/docs/"
 tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -C "$release_dir" -cf - "$package_name" | gzip -n > "$release_dir/$package_name.tar.gz"
 (cd "$release_dir" && sha256sum "$package_name.tar.gz" > SHA256SUMS)
 printf '%s\n' "RELEASE_PACKAGE_READY: $release_dir/$package_name.tar.gz"

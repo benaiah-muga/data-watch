@@ -2,6 +2,20 @@
 
 (() => {
   const $ = (id) => document.getElementById(id);
+  const clockTimeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const clockZoneFormat = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" });
+  function updateClock() {
+    const now = new Date();
+    const clock = $("local-clock");
+    if (!clock) return;
+    clock.dateTime = now.toISOString();
+    clock.textContent = clockTimeFormat.format(now).replace(/\u202f/g, " ");
+    const zone = clockZoneFormat.formatToParts(now).find((part) => part.type === "timeZoneName");
+    $("clock-zone").textContent = zone ? zone.value : "LOCAL";
+  }
+
+  updateClock();
+  window.setInterval(updateClock, 1000);
   const state = { range: "today", sort: "total", data: null, selected: null, selectedApp: null, buckets: [], signalHistory: [], busy: false, timer: null, queued: false };
   const labels = { today: "today", hour: "in the last hour", week: "in the last 7 days" };
   const number = (value) => Math.max(0, Number(value) || 0);
@@ -120,6 +134,7 @@
       button.addEventListener("click", () => {
         state.selected = state.selected === b.ts ? null : b.ts;
         document.querySelectorAll(".time-bucket").forEach((item) => item.setAttribute("aria-pressed", String(item === button && state.selected !== null)));
+        renderOverview();
         renderApps();
         describeTimeline();
       });
@@ -139,11 +154,32 @@
 
   function describeTimeline() {
     const b = state.buckets.find((item) => item.ts === state.selected);
-    if (b) set("timeline-description", `Selected ${date(b.ts, true)} to ${date(b.end, true)}: ${bytes(b.rx + b.tx)} used. Program details are shown below.`);
+    if (b) set("timeline-description", `Selected ${date(b.ts, true)} to ${date(b.end, true)}: ${bytes(b.rx + b.tx)} used. The summary and program list show this interval.`);
     else if (state.buckets.length) {
       const peak = state.buckets.reduce((a, item) => item.rx + item.tx > a.rx + a.tx ? item : a);
       set("timeline-description", `Busiest recorded time: ${date(peak.ts, true)} to ${date(peak.end, true)}, ${bytes(peak.rx + peak.tx)}. All times use your PC's local time.`);
     } else set("timeline-description", "History starts when monitoring begins. Leave Data Watch running to build a picture of your usage.");
+  }
+
+  function renderOverview() {
+    if (!state.data) return;
+    const selected = state.buckets.find((bucket) => bucket.ts === state.selected);
+    const totals = selected || state.data.totals || {};
+    const rx = number(totals.rx);
+    const tx = number(totals.tx);
+    const total = rx + tx;
+    set("total-label", selected ? "Data used in selected interval" : `Data used ${labels[state.range]}`);
+    set("total", bytes(total));
+    set("download", bytes(rx));
+    set("upload", bytes(tx));
+    const downloadShare = total > 0 ? rx / total * 100 : 0;
+    set("download-share", `${downloadShare.toFixed(1)}% of total`);
+    set("upload-share", `${(total > 0 ? 100 - downloadShare : 0).toFixed(1)}% of total`);
+    set("since", selected
+      ? `${date(selected.ts, true)} to ${date(selected.end, true)}`
+      : state.data.first_recorded_at ? `History since ${date(state.data.first_recorded_at, true)}` : "History begins with the first reading");
+    $("return-current").hidden = !selected && state.range === "today";
+    $("metrics").classList.toggle("interval-selected", Boolean(selected));
   }
 
   function renderApps() {
@@ -237,6 +273,7 @@
       button.addEventListener("click", () => {
         state.selected = state.selected === bucket.ts ? null : bucket.ts;
         renderTimeline();
+        renderOverview();
         renderApps();
       });
       fragment.append(button);
@@ -252,16 +289,7 @@
 
   function render(data) {
     state.data = data;
-    const totals = data.totals || {};
     const live = data.live || {};
-    set("total-label", `Data used ${labels[state.range]}`);
-    set("total", bytes(number(totals.rx) + number(totals.tx)));
-    set("download", bytes(totals.rx));
-    set("upload", bytes(totals.tx));
-    const total = number(totals.rx) + number(totals.tx);
-    const downloadShare = total > 0 ? number(totals.rx) / total * 100 : 0;
-    set("download-share", `${downloadShare.toFixed(1)}% of total`);
-    set("upload-share", `${(total > 0 ? 100 - downloadShare : 0).toFixed(1)}% of total`);
     const totalRate = number(live.rx) + number(live.tx);
     set("live", `${bytes(totalRate)}/s`);
     set("live-detail", `Down ${bytes(live.rx)}/s  /  Up ${bytes(live.tx)}/s`);
@@ -279,7 +307,6 @@
       const value = offset >= 0 ? state.signalHistory[offset] : 0;
       bar.style.setProperty("--level", `${Math.max(2, 2 + value / peakRate * 24)}px`);
     });
-    set("since", data.first_recorded_at ? `History since ${date(data.first_recorded_at, true)}` : "History begins with the first reading");
     const options = [{ name: "auto", label: "Automatic" }, ...(data.interfaces || []).filter((item) => item.name !== "lo").map((item) => ({ name: item.name, label: `${item.name}${item.active ? " (connected)" : ""}` }))];
     const optionsGroup = $("interface-options");
     const selection = data.interface_selection || data.selected_interface || (optionsGroup.dataset.saved || "auto");
@@ -316,12 +343,13 @@
     set("notification-badge", alerts.notifications_available ? "SYSTEM NOTIFICATIONS READY" : "NOTIFICATIONS UNAVAILABLE");
     $("notification-badge").classList.toggle("unavailable", !alerts.notifications_available);
     if (!alerts.notifications_available) set("alert-message", "Install libnotify-bin, then restart Data Watch: sudo apt install libnotify-bin && systemctl --user restart data-watch.service");
-    else if (number(alerts.threshold_bytes) > 0) set("alert-message", `Daily alert is on at ${bytes(alerts.threshold_bytes)} for the selected connection. It fires once per local day.`);
-    else set("alert-message", "Notifications appear in your desktop session, even when this dashboard is closed. Set a limit to turn alerts on.");
+    else if (number(alerts.threshold_bytes) > 0) set("alert-message", `Daily alert is on at ${bytes(alerts.threshold_bytes)} for the selected connection. It plays a system sound once per local day.`);
+    else set("alert-message", "Set a daily limit to receive a desktop notification with a system sound.");
     notice("collector-error", data.collector_error ? `Program monitoring needs attention: ${data.collector_error}` : "");
     set("updated", `Updated ${date(data.now || Date.now() / 1000)}`);
     document.querySelector(".status-dot").classList.add("connected");
     renderTimeline();
+    renderOverview();
     renderApps();
     renderAppHistory();
   }
@@ -351,13 +379,23 @@
     if (state.range === button.dataset.range) return;
     state.range = button.dataset.range;
     state.selected = null;
+    state.selectedApp = null;
     document.querySelectorAll("[data-range]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
     $("export").href = `/api/export?range=${state.range}`;
     set("apps-description", "Loading selected period...");
     refresh();
   }));
   $("sort").addEventListener("change", () => { state.sort = $("sort").value; if (state.data) renderApps(); });
-  $("clear-selection").addEventListener("click", () => { state.selected = null; renderTimeline(); renderApps(); });
+  $("clear-selection").addEventListener("click", () => { state.selected = null; renderTimeline(); renderOverview(); renderApps(); });
+  $("return-current").addEventListener("click", () => {
+    state.range = "today";
+    state.selected = null;
+    state.selectedApp = null;
+    document.querySelectorAll("[data-range]").forEach((item) => item.setAttribute("aria-pressed", String(item.dataset.range === "today")));
+    $("export").href = "/api/export?range=today";
+    set("apps-description", "Loading today's readings...");
+    refresh();
+  });
   $("close-app-history").addEventListener("click", () => { state.selectedApp = null; renderApps(); renderAppHistory(); });
   $("alert-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -373,7 +411,7 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
       if (state.data) { state.data.alerts = { ...state.data.alerts, threshold_bytes: threshold }; render(state.data); }
-      set("alert-message", enabled ? `Daily alert saved at ${bytes(threshold)} for the selected connection.` : "Daily alert disabled.");
+      set("alert-message", enabled ? `Daily alert saved at ${bytes(threshold)} for the selected connection. It includes a system sound.` : "Daily alert disabled.");
     } catch (error) { set("alert-message", `Could not save the alert: ${error.message}`); }
   });
   $("test-alert").addEventListener("click", async () => {
@@ -381,7 +419,7 @@
       const response = await fetch("/api/alerts/test", { method: "POST", headers: { "X-Data-Watch": "1" }, signal: AbortSignal.timeout(10000) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-      set("alert-message", "Test notification sent. Check your desktop notification area.");
+      set("alert-message", "Test notification sent with a system alert sound. Check your desktop notification area.");
     } catch (error) { set("alert-message", `Could not send a notification: ${error.message}`); }
   });
   $("interface-options").addEventListener("change", async (event) => {
