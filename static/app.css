@@ -199,6 +199,9 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 4px 
 
 @media (max-width: 800px) {
   main { padding: 28px 21px 24px; }
+  .overview-heading { align-items: flex-start; flex-direction: column; gap: 13px; }
+  .summary-actions { width: 100%; flex-wrap: wrap; justify-content: flex-start; gap: 10px; }
+  .range-group { flex-wrap: wrap; }
   .masthead { flex-wrap: wrap; }
   .brand-lockup { flex-basis: calc(50% - 8px); }
   .clock-card { flex: 1 1 184px; }
@@ -242,7 +245,8 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 4px 
   .alerts-panel>.section-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
   .alert-controls { gap: 10px; }
   .alert-toggle { width: 100%; }
-  footer { align-items: flex-start; font-size: 9px; }
+  .range-group { flex-wrap: wrap; }
+  footer { align-items: flex-start; flex-wrap: wrap; font-size: 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }

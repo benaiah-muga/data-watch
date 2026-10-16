@@ -41,7 +41,7 @@ systemctl --user restart data-watch.service
 
 ## What it shows
 
-- Connection totals for today, the last hour, or seven days, with downloads and uploads separated.
+- Connection totals for today, the last hour, seven daily bars, twelve weekly bars, twelve monthly bars, or five yearly bars, with downloads and uploads separated.
 - Download and upload cards show each direction's share of the selected period.
 - The dashboard header shows local time and timezone beside current throughput and connection status.
 - Selecting a timeline bar updates the summary and program list to that interval. Use **Return to today** to reload the current readings.
@@ -49,10 +49,11 @@ systemctl --user restart data-watch.service
 - A live throughput meter in the header and a low-contrast Matrix-style background that stays behind the dashboard content.
 - A timeline of usage. Select a period to inspect its attributed programs.
 - Program totals and current rates. Select a program to see its usage history over the chosen period.
+- The current on-disk history database size, including pending SQLite WAL writes.
 - A configurable daily data limit. Data Watch sends one Linux desktop notification with the system alarm sound per day when the selected connection reaches it. Use **Send test** to check notifications and sound.
 - CSV export for further analysis.
 
-Times use the PC's local timezone and sizes use binary units (MiB, GiB). The collector samples every two seconds, stores data by minute, and keeps 30 days.
+Times use the PC's local timezone and sizes use binary units (MiB, GiB). The collector samples every two seconds and stores detailed data by minute for 30 days, then compacts older traffic into daily summaries retained for up to five years.
 
 ## Attribution and privacy
 

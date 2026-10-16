@@ -17,7 +17,7 @@
   updateClock();
   window.setInterval(updateClock, 1000);
   const state = { range: "today", sort: "total", data: null, selected: null, selectedApp: null, buckets: [], signalHistory: [], busy: false, timer: null, queued: false };
-  const labels = { today: "today", hour: "in the last hour", week: "in the last 7 days" };
+  const labels = { today: "today", hour: "in the last hour", week: "in the last 7 days", weeks: "in the last 12 weeks", months: "in the last 12 months", years: "in the last 5 years" };
   const number = (value) => Math.max(0, Number(value) || 0);
   const bytes = (value) => {
     let n = number(value);
@@ -27,6 +27,21 @@
     return `${n.toLocaleString(undefined, { maximumFractionDigits: i ? 1 : 0 })} ${units[i]}`;
   };
   const date = (ts, full = false) => new Date(number(ts) * 1000).toLocaleString(undefined, full ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
+  const calendarDate = (ts, options) => new Date(number(ts) * 1000).toLocaleDateString(undefined, options);
+  function bucketAxisLabel(ts, range = state.range) {
+    if (range === "today" || range === "hour") return calendarDate(ts, { hour: "2-digit", minute: "2-digit" });
+    if (range === "week") return calendarDate(ts, { weekday: "short" });
+    if (range === "weeks") return calendarDate(ts, { month: "short", day: "numeric" });
+    if (range === "months") return calendarDate(ts, { month: "short" });
+    return calendarDate(ts, { year: "numeric" });
+  }
+  function bucketRangeLabel(bucket, range = state.range) {
+    if (range === "today" || range === "hour") return `${date(bucket.ts, true)} to ${date(bucket.end, true)}`;
+    if (range === "week") return calendarDate(bucket.ts, { weekday: "long", month: "long", day: "numeric" });
+    if (range === "weeks") return `${calendarDate(bucket.ts, { month: "short", day: "numeric" })} to ${calendarDate(bucket.end - 1, { month: "short", day: "numeric" })}`;
+    if (range === "months") return calendarDate(bucket.ts, { month: "long", year: "numeric" });
+    return calendarDate(bucket.ts, { year: "numeric" });
+  }
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (id, message) => { set(id, message); $(id).hidden = !message; };
 
@@ -82,26 +97,12 @@
   }
 
   function makeBuckets(series) {
-    const defaultStep = state.range === "week" ? 3600 : state.range === "today" ? 900 : 60;
-    const recorded = [...series].sort((a, b) => number(a.ts) - number(b.ts));
-    const lookup = new Map(recorded.map((b) => [number(b.ts), b]));
-    const sorted = [];
-    if (recorded.length) {
-      for (let ts = number(recorded[0].ts); ts <= number(recorded[recorded.length - 1].ts); ts += defaultStep) {
-        sorted.push(lookup.get(ts) || { ts, rx: 0, tx: 0, apps: [], gap: true });
-      }
-    }
-    const groupSize = Math.max(1, Math.ceil(sorted.length / 96));
-    const step = defaultStep;
-    const result = [];
-    for (let i = 0; i < sorted.length; i += groupSize) {
-      const group = sorted.slice(i, i + groupSize);
-      result.push({ ts: number(group[0].ts), end: number(group[group.length - 1].ts) + step,
-        gap: group.every((b) => b.gap),
-        rx: group.reduce((n, b) => n + number(b.rx), 0), tx: group.reduce((n, b) => n + number(b.tx), 0),
-        apps: mergeApps(group.flatMap((b) => Array.isArray(b.apps) ? b.apps : [])) });
-    }
-    return result;
+    return [...series].sort((a, b) => number(a.ts) - number(b.ts)).map((bucket) => {
+      const rx = number(bucket.rx);
+      const tx = number(bucket.tx);
+      return { ...bucket, ts: number(bucket.ts), end: number(bucket.end), rx, tx,
+        gap: rx + tx === 0, apps: mergeApps(Array.isArray(bucket.apps) ? bucket.apps : []) };
+    });
   }
 
   function renderTimeline() {
@@ -119,7 +120,7 @@
       button.className = "time-bucket";
       button.dataset.ts = String(b.ts);
       button.setAttribute("aria-pressed", String(state.selected === b.ts));
-      const description = `${date(b.ts, state.range === "week")} to ${date(b.end, state.range === "week")}: ${b.gap ? "No readings recorded" : `${bytes(b.rx)} downloaded, ${bytes(b.tx)} uploaded`}`;
+      const description = `${bucketRangeLabel(b)}: ${b.gap ? "No readings recorded" : `${bytes(b.rx)} downloaded, ${bytes(b.tx)} uploaded`}`;
       button.setAttribute("aria-label", description);
       button.title = description;
       if (b.gap) button.classList.add("recording-gap");
@@ -146,18 +147,18 @@
       const focusedButton = [...$("timeline").children].find((el) => el.dataset.ts === focusedTimestamp);
       if (focusedButton) focusedButton.focus({ preventScroll: true });
     }
-    set("axis-start", buckets.length ? date(buckets[0].ts, state.range === "week") : "");
-    set("axis-mid", buckets.length > 2 ? date(buckets[Math.floor(buckets.length / 2)].ts, state.range === "week") : "");
-    set("axis-end", buckets.length ? date(buckets[buckets.length - 1].end, state.range === "week") : "");
+    set("axis-start", buckets.length ? bucketAxisLabel(buckets[0].ts) : "");
+    set("axis-mid", buckets.length > 2 ? bucketAxisLabel(buckets[Math.floor(buckets.length / 2)].ts) : "");
+    set("axis-end", buckets.length ? bucketAxisLabel(buckets[buckets.length - 1].ts) : "");
     describeTimeline();
   }
 
   function describeTimeline() {
     const b = state.buckets.find((item) => item.ts === state.selected);
-    if (b) set("timeline-description", `Selected ${date(b.ts, true)} to ${date(b.end, true)}: ${bytes(b.rx + b.tx)} used. The summary and program list show this interval.`);
+    if (b) set("timeline-description", `Selected ${bucketRangeLabel(b)}: ${bytes(b.rx + b.tx)} used. The summary and program list show this interval.`);
     else if (state.buckets.length) {
       const peak = state.buckets.reduce((a, item) => item.rx + item.tx > a.rx + a.tx ? item : a);
-      set("timeline-description", `Busiest recorded time: ${date(peak.ts, true)} to ${date(peak.end, true)}, ${bytes(peak.rx + peak.tx)}. All times use your PC's local time.`);
+      set("timeline-description", `Busiest recorded time: ${bucketRangeLabel(peak)}, ${bytes(peak.rx + peak.tx)}. All times use your PC's local time.`);
     } else set("timeline-description", "History starts when monitoring begins. Leave Data Watch running to build a picture of your usage.");
   }
 
@@ -176,7 +177,7 @@
     set("download-share", `${downloadShare.toFixed(1)}% of total`);
     set("upload-share", `${(total > 0 ? 100 - downloadShare : 0).toFixed(1)}% of total`);
     set("since", selected
-      ? `${date(selected.ts, true)} to ${date(selected.end, true)}`
+      ? bucketRangeLabel(selected)
       : state.data.first_recorded_at ? `History since ${date(state.data.first_recorded_at, true)}` : "History begins with the first reading");
     $("return-current").hidden = !selected && state.range === "today";
     $("metrics").classList.toggle("interval-selected", Boolean(selected));
@@ -226,7 +227,7 @@
     set("apps-empty", selected ? "No programs could be attributed in this time window. The connection may still have used data." : "No program traffic recorded yet. Use your connection and check back in a moment.");
     $("clear-selection").hidden = !selected;
     $("sort").disabled = Boolean(selected);
-    set("apps-description", selected ? `Traffic from ${date(selected.ts, true)} to ${date(selected.end, true)}. Current speed is only available for the whole period.` : `Observed program traffic ${labels[state.range]}.`);
+    set("apps-description", selected ? `Traffic from ${bucketRangeLabel(selected)}. Current speed is only available for the whole period.` : `Observed program traffic ${labels[state.range]}.`);
     const total = selected || state.data.totals || {};
     const estimated = selected ? { rx: Math.max(0, total.rx - apps.reduce((n, app) => n + app.rx, 0)), tx: Math.max(0, total.tx - apps.reduce((n, app) => n + app.tx, 0)) } : state.data.unattributed || {};
     const difference = number(estimated.rx) + number(estimated.tx);
@@ -261,7 +262,7 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "history-bucket";
-      button.title = `${date(bucket.ts, true)}: ${bytes(bucket.rx)} down, ${bytes(bucket.tx)} up`;
+      button.title = `${bucketRangeLabel(bucket)}: ${bytes(bucket.rx)} down, ${bytes(bucket.tx)} up`;
       button.setAttribute("aria-label", button.title);
       const down = document.createElement("span");
       down.className = "history-bar-download";
@@ -282,9 +283,9 @@
     const hasTraffic = rx + tx > 0;
     $("history-empty").hidden = hasTraffic;
     chart.hidden = !hasTraffic;
-    set("history-axis-start", rows.length ? date(rows[0].ts, state.range === "week") : "");
-    set("history-axis-mid", rows.length > 2 ? date(rows[Math.floor(rows.length / 2)].ts, state.range === "week") : "");
-    set("history-axis-end", rows.length ? date(rows[rows.length - 1].end, state.range === "week") : "");
+    set("history-axis-start", rows.length ? bucketAxisLabel(rows[0].ts) : "");
+    set("history-axis-mid", rows.length > 2 ? bucketAxisLabel(rows[Math.floor(rows.length / 2)].ts) : "");
+    set("history-axis-end", rows.length ? bucketAxisLabel(rows[rows.length - 1].ts) : "");
   }
 
   function render(data) {
@@ -347,6 +348,7 @@
     else set("alert-message", "Set a daily limit to receive a desktop notification with a system sound.");
     notice("collector-error", data.collector_error ? `Program monitoring needs attention: ${data.collector_error}` : "");
     set("updated", `Updated ${date(data.now || Date.now() / 1000)}`);
+    set("database-size", bytes(data.database_size_bytes));
     document.querySelector(".status-dot").classList.add("connected");
     renderTimeline();
     renderOverview();

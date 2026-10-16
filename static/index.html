@@ -36,7 +36,7 @@
     <div id="mode-notice" class="notice" hidden></div>
 
     <section aria-label="Usage summary" class="summary-section">
-      <div class="section-heading overview-heading"><div><p class="eyebrow">YOUR DATA PICTURE</p><h2 class="section-title">Usage overview</h2></div><div class="summary-actions"><button type="button" id="return-current" class="current-button" hidden>Return to today</button><div class="range-group" role="group" aria-label="Usage period"><button type="button" data-range="today" aria-pressed="true">Today</button><button type="button" data-range="hour" aria-pressed="false">Last hour</button><button type="button" data-range="week" aria-pressed="false">7 days</button></div><a id="export" href="/api/export?range=today" download>Export CSV <span aria-hidden="true">↗</span></a></div></div>
+      <div class="section-heading overview-heading"><div><p class="eyebrow">YOUR DATA PICTURE</p><h2 class="section-title">Usage overview</h2></div><div class="summary-actions"><button type="button" id="return-current" class="current-button" hidden>Return to today</button><div class="range-group" role="group" aria-label="Usage period"><button type="button" data-range="today" aria-pressed="true">Today</button><button type="button" data-range="hour" aria-pressed="false">Last hour</button><button type="button" data-range="week" aria-pressed="false">7 days</button><button type="button" data-range="weeks" aria-pressed="false">Weeks</button><button type="button" data-range="months" aria-pressed="false">Months</button><button type="button" data-range="years" aria-pressed="false">Years</button></div><a id="export" href="/api/export?range=today" download>Export CSV <span aria-hidden="true">↗</span></a></div></div>
       <div id="metrics" class="metrics">
         <div class="metric total"><p id="total-label">Data used today</p><strong id="total">...</strong><span id="since">Waiting for first reading</span></div>
         <div class="metric"><p><span class="legend-dot download"></span> Downloaded</p><strong id="download">...</strong><span>Received · <b id="download-share" class="metric-share">0.0% of total</b></span></div>
@@ -79,8 +79,8 @@
       <p class="alert-footnote" id="alert-message" aria-live="polite">Data alerts use your desktop notification sound while your session is running, even when this dashboard is closed. The monitor checks the selected connection.</p>
     </section>
 
-    <footer><span><i class="footer-led"></i>Local monitor <span aria-hidden="true">·</span> No cloud account</span><span id="updated" aria-live="polite">Waiting for monitor</span></footer>
-    <p class="footnote">Network totals cover the selected connection, including local traffic and background services. Program attribution may be incomplete and may not add up to the connection total. History is kept locally for 30 days.</p>
+    <footer><span><i class="footer-led"></i>Local monitor <span aria-hidden="true">·</span> No cloud account</span><span>History database <strong id="database-size" aria-label="History database size including pending writes">…</strong></span><span id="updated" aria-live="polite">Waiting for monitor</span></footer>
+    <p class="footnote">Network totals cover the selected connection, including local traffic and background services. Program attribution may be incomplete and may not add up to the connection total. Detailed history is kept locally for 30 days and compact daily summaries for up to 5 years.</p>
     <p id="tracking-help" class="footnote tracking-help">Enable persistent TCP + UDP program tracking: run <code>~/.local/bin/data-watch full</code> in a terminal. Ubuntu will ask for your password once to install the capture service. It then runs after logout and reboot.</p>
   </main>
 </body>

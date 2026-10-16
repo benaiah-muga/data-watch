@@ -16,6 +16,7 @@ const POLL_SECONDS: u64 = 2;
 const INTERFACE_REFRESH_SECONDS: f64 = 5.0;
 const ADDRESS_REFRESH_SECONDS: f64 = 30.0;
 const RETENTION_DAYS: u64 = 30;
+const ARCHIVE_YEARS: u64 = 5;
 const CAPTURE_NAME: &str = "capture.sock";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,11 +136,13 @@ impl Collector {
             .lock()
             .map_err(|_| "Collector state is unavailable.".to_string())?;
         let now = unix_time();
-        let mut result = self
+        let store = self
             .store
             .lock()
-            .map_err(|_| "Storage lock is unavailable.".to_string())?
-            .history(period, &state.interface, now)?;
+            .map_err(|_| "Storage lock is unavailable.".to_string())?;
+        let database_size_bytes = store.size_bytes()?;
+        let mut result = store.history(period, &state.interface, now)?;
+        drop(store);
         let obj = result
             .as_object_mut()
             .ok_or_else(|| "Storage returned an invalid history response.".to_string())?;
@@ -175,6 +178,7 @@ impl Collector {
         let total_rx = totals.get("rx").and_then(Value::as_u64).unwrap_or(0);
         let total_tx = totals.get("tx").and_then(Value::as_u64).unwrap_or(0);
         obj.insert("now".into(), json!(now));
+        obj.insert("database_size_bytes".into(), json!(database_size_bytes));
         obj.insert("started_at".into(), json!(state.started_at));
         obj.insert("interface".into(), json!(state.interface));
         obj.insert("interface_selection".into(), json!(state.selection));
@@ -192,6 +196,7 @@ impl Collector {
         obj.insert("live".into(), json!({"rx":state.live.0,"tx":state.live.1}));
         obj.insert("interfaces".into(), json!(devices));
         obj.insert("retention_days".into(), json!(RETENTION_DAYS));
+        obj.insert("archive_years".into(), json!(ARCHIVE_YEARS));
         obj.insert(
             "alerts".into(),
             json!({

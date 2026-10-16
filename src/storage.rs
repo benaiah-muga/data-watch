@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 
 #[repr(C)]
@@ -59,12 +59,23 @@ const SQLITE_OK: c_int = 0;
 const SQLITE_ROW: c_int = 100;
 const SQLITE_DONE: c_int = 101;
 const SQLITE_NULL: c_int = 5;
-const RETENTION_SECONDS: f64 = 30.0 * 86400.0;
+const DETAILED_RETENTION_SECONDS: f64 = 30.0 * 86400.0;
 type SeriesParts = HashMap<String, (u64, u64)>;
 type SeriesBuckets = HashMap<i64, (u64, u64, SeriesParts)>;
 
+#[derive(Clone, Copy)]
+enum BucketUnit {
+    Minute,
+    QuarterHour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
 pub struct Store {
     db: *mut Sqlite3,
+    path: PathBuf,
 }
 
 // The handle is accessed only through an Arc<Mutex<Store>> once it leaves the
@@ -78,6 +89,7 @@ impl Store {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create database directory: {e}"))?;
         }
+        let file_path = path.to_path_buf();
         let path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| "database path contains a NUL byte".to_string())?;
         let mut db = ptr::null_mut();
@@ -89,7 +101,10 @@ impl Store {
             }
             return Err(message);
         }
-        let store = Self { db };
+        let store = Self {
+            db,
+            path: file_path,
+        };
         store.exec(
             "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
         )?;
@@ -100,9 +115,29 @@ impl Store {
              CREATE TABLE IF NOT EXISTS apps (
                 ts INTEGER, interface TEXT, name TEXT, rx INTEGER, tx INTEGER,
                 last_seen REAL, PRIMARY KEY(ts, interface, name));
+             CREATE TABLE IF NOT EXISTS traffic_daily (
+                day_ts INTEGER, interface TEXT, rx INTEGER, tx INTEGER,
+                PRIMARY KEY(day_ts, interface));
+             CREATE TABLE IF NOT EXISTS apps_daily (
+                day_ts INTEGER, interface TEXT, name TEXT, rx INTEGER, tx INTEGER,
+                last_seen REAL, PRIMARY KEY(day_ts, interface, name));
              CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);",
         )?;
         Ok(store)
+    }
+
+    pub fn size_bytes(&self) -> Result<u64, String> {
+        let mut size = std::fs::metadata(&self.path)
+            .map_err(|e| format!("read database size: {e}"))?
+            .len();
+        let mut wal = self.path.as_os_str().to_os_string();
+        wal.push("-wal");
+        match std::fs::metadata(Path::new(&wal)) {
+            Ok(metadata) => size = size.saturating_add(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("read database WAL size: {error}")),
+        }
+        Ok(size)
     }
 
     pub fn setting(&self, key: &str, default: &str) -> Result<String, String> {
@@ -123,7 +158,7 @@ impl Store {
     }
 
     pub fn today_total(&self, now: f64, interface: &str) -> Result<u64, String> {
-        let (start, _) = range_start("today", now)?;
+        let (start, _, _) = period_buckets("today", now)?;
         let mut stmt = self.prepare(
             "SELECT COALESCE(SUM(rx),0) + COALESCE(SUM(tx),0) FROM traffic WHERE ts>=?1 AND interface=?2",
         )?;
@@ -187,13 +222,34 @@ impl Store {
     }
 
     pub fn prune(&mut self, now: f64) -> Result<(), String> {
-        let cutoff = (now - RETENTION_SECONDS) as i64;
+        let cutoff = (now - DETAILED_RETENTION_SECONDS) as i64;
+        let archive_cutoff = period_buckets("years", now)?.0;
         self.exec("BEGIN IMMEDIATE")?;
         let result = (|| {
+            let mut traffic = self.prepare(
+                "INSERT INTO traffic_daily(day_ts,interface,rx,tx)
+                 SELECT CAST(strftime('%s',datetime(ts,'unixepoch','localtime','start of day')) AS INTEGER),interface,SUM(rx),SUM(tx)
+                 FROM traffic WHERE ts < ?1 GROUP BY 1,2
+                 ON CONFLICT(day_ts,interface) DO UPDATE SET rx=rx+excluded.rx,tx=tx+excluded.tx",
+            )?;
+            traffic.bind_i64(1, cutoff)?;
+            traffic.expect_done()?;
+            let mut apps = self.prepare(
+                "INSERT INTO apps_daily(day_ts,interface,name,rx,tx,last_seen)
+                 SELECT CAST(strftime('%s',datetime(ts,'unixepoch','localtime','start of day')) AS INTEGER),interface,name,SUM(rx),SUM(tx),MAX(last_seen)
+                 FROM apps WHERE ts < ?1 GROUP BY 1,2,3
+                 ON CONFLICT(day_ts,interface,name) DO UPDATE SET rx=rx+excluded.rx,tx=tx+excluded.tx,last_seen=MAX(last_seen,excluded.last_seen)",
+            )?;
+            apps.bind_i64(1, cutoff)?;
+            apps.expect_done()?;
             for table in ["traffic", "apps"] {
-                let sql = format!("DELETE FROM {table} WHERE ts < ?1");
-                let mut stmt = self.prepare(&sql)?;
+                let mut stmt = self.prepare(&format!("DELETE FROM {table} WHERE ts < ?1"))?;
                 stmt.bind_i64(1, cutoff)?;
+                stmt.expect_done()?;
+            }
+            for table in ["traffic_daily", "apps_daily"] {
+                let mut stmt = self.prepare(&format!("DELETE FROM {table} WHERE day_ts < ?1"))?;
+                stmt.bind_i64(1, archive_cutoff)?;
                 stmt.expect_done()?;
             }
             Ok(())
@@ -208,72 +264,68 @@ impl Store {
     }
 
     pub fn history(&self, period: &str, interface: &str, now: f64) -> Result<Value, String> {
-        let (mut start, bucket) = range_start(period, now)?;
-        start = start.div_euclid(60) * 60;
-        let mut traffic_stmt =
-            self.prepare("SELECT ts,rx,tx FROM traffic WHERE ts>=?1 AND interface=?2 ORDER BY ts")?;
-        traffic_stmt.bind_i64(1, start)?;
-        traffic_stmt.bind_text(2, interface)?;
-        let mut traffic = Vec::new();
-        while traffic_stmt.step()? == SQLITE_ROW {
-            traffic.push((
-                traffic_stmt.i64(0),
-                traffic_stmt.i64(1).max(0) as u64,
-                traffic_stmt.i64(2).max(0) as u64,
-            ));
-        }
-
-        let mut apps_stmt = self.prepare(
-            "SELECT ts,name,rx,tx,last_seen FROM apps WHERE ts>=?1 AND interface=?2 ORDER BY ts",
-        )?;
-        apps_stmt.bind_i64(1, start)?;
-        apps_stmt.bind_text(2, interface)?;
-        let mut rows = Vec::new();
-        while apps_stmt.step()? == SQLITE_ROW {
-            rows.push((
-                apps_stmt.i64(0),
-                apps_stmt.text(1).unwrap_or_default(),
-                apps_stmt.i64(2).max(0) as u64,
-                apps_stmt.i64(3).max(0) as u64,
-                apps_stmt.double(4),
-            ));
-        }
-
-        let mut first_stmt = self.prepare("SELECT MIN(ts) FROM traffic WHERE interface=?1")?;
-        first_stmt.bind_text(1, interface)?;
-        let first = if first_stmt.step()? == SQLITE_ROW {
-            if first_stmt.is_null(0) {
-                Value::Null
-            } else {
-                json!(first_stmt.i64(0))
-            }
-        } else {
-            Value::Null
-        };
-
-        let mut series: SeriesBuckets = HashMap::new();
+        let (start, unit, bucket_starts) = period_buckets(period, now)?;
+        let mut series: SeriesBuckets = bucket_starts
+            .iter()
+            .map(|ts| (*ts, (0, 0, HashMap::new())))
+            .collect();
         let mut totals = (0u64, 0u64);
-        for (ts, rx, tx) in traffic {
-            let key = ts.div_euclid(bucket) * bucket;
-            let slot = series.entry(key).or_default();
-            slot.0 = slot.0.saturating_add(rx);
-            slot.1 = slot.1.saturating_add(tx);
-            totals.0 = totals.0.saturating_add(rx);
-            totals.1 = totals.1.saturating_add(tx);
+
+        for (table, time_column) in [("traffic", "ts"), ("traffic_daily", "day_ts")] {
+            let mut stmt = self.prepare(&format!(
+                "SELECT {time_column},rx,tx FROM {table} WHERE {time_column}>=?1 AND interface=?2 ORDER BY {time_column}"
+            ))?;
+            stmt.bind_i64(1, start)?;
+            stmt.bind_text(2, interface)?;
+            while stmt.step()? == SQLITE_ROW {
+                let ts = stmt.i64(0);
+                let rx = stmt.i64(1).max(0) as u64;
+                let tx = stmt.i64(2).max(0) as u64;
+                let key = bucket_start(ts, unit)?;
+                let slot = series.entry(key).or_default();
+                slot.0 = slot.0.saturating_add(rx);
+                slot.1 = slot.1.saturating_add(tx);
+                totals.0 = totals.0.saturating_add(rx);
+                totals.1 = totals.1.saturating_add(tx);
+            }
         }
 
         let mut app_totals: HashMap<String, (u64, u64, f64)> = HashMap::new();
-        for (ts, name, rx, tx, seen) in rows {
-            let total = app_totals.entry(name.clone()).or_insert((0, 0, seen));
-            total.0 = total.0.saturating_add(rx);
-            total.1 = total.1.saturating_add(tx);
-            total.2 = total.2.max(seen);
-            let key = ts.div_euclid(bucket) * bucket;
-            let slot = series.entry(key).or_default();
-            let part = slot.2.entry(name).or_default();
-            part.0 = part.0.saturating_add(rx);
-            part.1 = part.1.saturating_add(tx);
+        for (table, time_column) in [("apps", "ts"), ("apps_daily", "day_ts")] {
+            let mut stmt = self.prepare(&format!(
+                "SELECT {time_column},name,rx,tx,last_seen FROM {table} WHERE {time_column}>=?1 AND interface=?2 ORDER BY {time_column}"
+            ))?;
+            stmt.bind_i64(1, start)?;
+            stmt.bind_text(2, interface)?;
+            while stmt.step()? == SQLITE_ROW {
+                let ts = stmt.i64(0);
+                let name = stmt.text(1).unwrap_or_default();
+                let rx = stmt.i64(2).max(0) as u64;
+                let tx = stmt.i64(3).max(0) as u64;
+                let seen = stmt.double(4);
+                let total = app_totals.entry(name.clone()).or_insert((0, 0, seen));
+                total.0 = total.0.saturating_add(rx);
+                total.1 = total.1.saturating_add(tx);
+                total.2 = total.2.max(seen);
+                let key = bucket_start(ts, unit)?;
+                let part = series.entry(key).or_default().2.entry(name).or_default();
+                part.0 = part.0.saturating_add(rx);
+                part.1 = part.1.saturating_add(tx);
+            }
         }
+
+        let mut first_stmt = self.prepare(
+            "SELECT MIN(ts) FROM (
+                SELECT ts FROM traffic WHERE interface=?1
+                UNION ALL SELECT day_ts FROM traffic_daily WHERE interface=?1
+             )",
+        )?;
+        first_stmt.bind_text(1, interface)?;
+        let first = if first_stmt.step()? == SQLITE_ROW && !first_stmt.is_null(0) {
+            json!(first_stmt.i64(0))
+        } else {
+            Value::Null
+        };
 
         let mut apps: Vec<_> = app_totals
             .into_iter()
@@ -281,25 +333,25 @@ impl Store {
             .collect();
         apps.sort_by(|a, b| b.1.saturating_add(b.2).cmp(&a.1.saturating_add(a.2)));
 
-        let mut series: Vec<_> = series.into_iter().collect();
-        series.sort_by_key(|(ts, _)| *ts);
-        let series: Vec<Value> = series
-            .into_iter()
-            .map(|(ts, (rx, tx, app_parts))| {
+        let series: Vec<Value> = bucket_starts
+            .iter()
+            .map(|ts| {
+                let (rx, tx, app_parts) = series.remove(ts).unwrap_or_default();
                 let mut parts: Vec<_> = app_parts.into_iter().collect();
                 parts.sort_by(|a, b| {
                     b.1 .0
                         .saturating_add(b.1 .1)
                         .cmp(&a.1 .0.saturating_add(a.1 .1))
                 });
-                json!({
+                Ok(json!({
                     "ts": ts,
+                    "end": next_bucket(*ts, unit)?,
                     "rx": rx,
                     "tx": tx,
                     "apps": parts.into_iter().map(|(name, (rx, tx))| json!({"name": name, "rx": rx, "tx": tx})).collect::<Vec<_>>()
-                })
+                }))
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
         let apps: Vec<Value> = apps
             .into_iter()
             .map(|(name, rx, tx, last_seen)| {
@@ -473,26 +525,111 @@ fn db_error(db: *mut Sqlite3, operation: &str) -> String {
     format!("{operation}: {message}")
 }
 
-fn range_start(period: &str, now: f64) -> Result<(i64, i64), String> {
-    match period {
-        "hour" => Ok(((now - 3600.0) as i64, 60)),
-        "week" => Ok(((now - 7.0 * 86400.0) as i64, 3600)),
-        "today" => {
-            let timestamp = now as libc::time_t;
-            let mut local: libc::tm = unsafe { std::mem::zeroed() };
-            let result = unsafe { libc::localtime_r(&timestamp, &mut local) };
-            if result.is_null() {
-                return Err("could not determine local date".to_string());
-            }
-            local.tm_hour = 0;
-            local.tm_min = 0;
-            local.tm_sec = 0;
-            local.tm_isdst = -1;
-            let midnight = unsafe { libc::mktime(&mut local) };
-            Ok((midnight as i64, 900))
-        }
-        _ => Err("Choose today, hour, or week.".to_string()),
+fn local_tm(timestamp: i64) -> Result<libc::tm, String> {
+    let raw: libc::time_t = timestamp as libc::time_t;
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&raw, &mut local) }.is_null() {
+        return Err("could not determine local date".to_string());
     }
+    Ok(local)
+}
+
+fn normalize_local(mut local: libc::tm) -> i64 {
+    local.tm_isdst = -1;
+    unsafe { libc::mktime(&mut local) as i64 }
+}
+
+fn shift_bucket(timestamp: i64, unit: BucketUnit, amount: i32) -> Result<i64, String> {
+    match unit {
+        BucketUnit::Minute => Ok(timestamp + i64::from(amount) * 60),
+        BucketUnit::QuarterHour => Ok(timestamp + i64::from(amount) * 900),
+        _ => {
+            let mut local = local_tm(timestamp)?;
+            match unit {
+                BucketUnit::Day => local.tm_mday += amount,
+                BucketUnit::Week => local.tm_mday += amount * 7,
+                BucketUnit::Month => local.tm_mon += amount,
+                BucketUnit::Year => local.tm_year += amount,
+                BucketUnit::Minute | BucketUnit::QuarterHour => unreachable!(),
+            }
+            Ok(normalize_local(local))
+        }
+    }
+}
+
+fn bucket_start(timestamp: i64, unit: BucketUnit) -> Result<i64, String> {
+    if matches!(unit, BucketUnit::Minute) {
+        return Ok(timestamp.div_euclid(60) * 60);
+    }
+    if matches!(unit, BucketUnit::QuarterHour) {
+        let day = bucket_start(timestamp, BucketUnit::Day)?;
+        return Ok(day + (timestamp - day).div_euclid(900) * 900);
+    }
+    let mut local = local_tm(timestamp)?;
+    local.tm_hour = 0;
+    local.tm_min = 0;
+    local.tm_sec = 0;
+    match unit {
+        BucketUnit::Day => {}
+        BucketUnit::Week => local.tm_mday -= (local.tm_wday + 6) % 7,
+        BucketUnit::Month => local.tm_mday = 1,
+        BucketUnit::Year => {
+            local.tm_mon = 0;
+            local.tm_mday = 1;
+        }
+        BucketUnit::Minute | BucketUnit::QuarterHour => unreachable!(),
+    }
+    Ok(normalize_local(local))
+}
+
+fn next_bucket(timestamp: i64, unit: BucketUnit) -> Result<i64, String> {
+    shift_bucket(timestamp, unit, 1)
+}
+
+fn period_buckets(period: &str, now: f64) -> Result<(i64, BucketUnit, Vec<i64>), String> {
+    let now = now as i64;
+    let (unit, current, count) = match period {
+        "hour" => {
+            let current = now.div_euclid(60) * 60;
+            (BucketUnit::Minute, current, 60)
+        }
+        "today" => (
+            BucketUnit::QuarterHour,
+            bucket_start(now, BucketUnit::Day)?,
+            0,
+        ),
+        "week" => {
+            let current = bucket_start(now, BucketUnit::Day)?;
+            (BucketUnit::Day, current, 7)
+        }
+        "weeks" => {
+            let current = bucket_start(now, BucketUnit::Week)?;
+            (BucketUnit::Week, current, 12)
+        }
+        "months" => {
+            let current = bucket_start(now, BucketUnit::Month)?;
+            (BucketUnit::Month, current, 12)
+        }
+        "years" => {
+            let current = bucket_start(now, BucketUnit::Year)?;
+            (BucketUnit::Year, current, 5)
+        }
+        _ => return Err("Choose today, hour, week, weeks, months, or years.".to_string()),
+    };
+    let mut starts = vec![current];
+    if count == 0 {
+        while next_bucket(*starts.last().unwrap(), unit)? <= now {
+            starts.push(next_bucket(*starts.last().unwrap(), unit)?);
+        }
+    } else {
+        while starts.len() < count {
+            let previous = shift_bucket(*starts.last().unwrap(), unit, -1)?;
+            starts.push(previous);
+        }
+        starts.reverse();
+    }
+    let start = starts[0];
+    Ok((start, unit, starts))
 }
 
 pub fn local_day_key(now: f64) -> Result<String, String> {
@@ -536,7 +673,7 @@ mod tests {
         assert_eq!(value["totals"]["tx"], 10);
         assert_eq!(value["apps"][0]["rx"], 40);
         assert_eq!(value["apps"][0]["last_seen"], 130.0);
-        assert_eq!(value["series"].as_array().unwrap().len(), 1);
+        assert_eq!(value["series"].as_array().unwrap().len(), 60);
         drop(db);
         cleanup(&path);
     }
@@ -564,10 +701,10 @@ mod tests {
         db.record(7200.0, "wlan0", 3, 4, &HashMap::new()).unwrap();
         let value = db.history("hour", "wlan0", 7200.0).unwrap();
         assert_eq!(value["totals"]["rx"], 3);
-        assert_eq!(value["series"].as_array().unwrap().len(), 1);
+        assert_eq!(value["series"].as_array().unwrap().len(), 60);
         assert_eq!(
             db.history("bad", "wlan0", 7200.0).unwrap_err(),
-            "Choose today, hour, or week."
+            "Choose today, hour, week, weeks, months, or years."
         );
         drop(db);
         cleanup(&path);
@@ -581,27 +718,60 @@ mod tests {
         db.record(1.0, "wlan0", 4, 2, &apps).unwrap();
         db.record(31.0 * 86400.0, "wlan0", 5, 3, &apps).unwrap();
         db.prune(31.0 * 86400.0).unwrap();
-        let value = db.history("week", "wlan0", 31.0 * 86400.0).unwrap();
-        assert_eq!(value["totals"]["rx"], 5);
-        assert_eq!(value["apps"][0]["rx"], 4);
+        let value = db.history("months", "wlan0", 31.0 * 86400.0).unwrap();
+        assert_eq!(value["totals"]["rx"], 9);
+        assert_eq!(value["apps"][0]["rx"], 8);
         drop(db);
         cleanup(&path);
     }
 
     #[test]
-    fn today_range_uses_local_midnight_and_expected_bucket_width() {
+    fn calendar_ranges_have_one_bucket_for_each_period() {
         let now = 1_800_000_000.0;
-        let (start, bucket) = range_start("today", now).unwrap();
-        assert_eq!(bucket, 900);
-        assert!(start <= now as i64);
-        assert!(now as i64 - start < 86400);
-        assert_eq!(
-            range_start("hour", now).unwrap(),
-            ((now - 3600.0) as i64, 60)
-        );
-        assert_eq!(
-            range_start("week", now).unwrap(),
-            ((now - 7.0 * 86400.0) as i64, 3600)
-        );
+        let (today_start, today_unit, today) = period_buckets("today", now).unwrap();
+        assert!(matches!(today_unit, BucketUnit::QuarterHour));
+        assert!(today_start <= now as i64);
+        assert!(now as i64 - today_start < 86400);
+        assert!((1..=96).contains(&today.len()));
+        assert_eq!(period_buckets("hour", now).unwrap().2.len(), 60);
+        assert_eq!(period_buckets("week", now).unwrap().2.len(), 7);
+        let weeks = period_buckets("weeks", now).unwrap().2;
+        assert_eq!(weeks.len(), 12);
+        assert!(weeks.iter().all(|ts| local_tm(*ts).unwrap().tm_wday == 1));
+        let months = period_buckets("months", now).unwrap().2;
+        assert_eq!(months.len(), 12);
+        assert!(months.iter().all(|ts| local_tm(*ts).unwrap().tm_mday == 1));
+        let years = period_buckets("years", now).unwrap().2;
+        assert_eq!(years.len(), 5);
+        assert!(years.iter().all(|ts| {
+            let local = local_tm(*ts).unwrap();
+            local.tm_mon == 0 && local.tm_mday == 1
+        }));
+    }
+
+    #[test]
+    fn old_minutes_are_compacted_and_remain_visible_in_long_ranges() {
+        let (mut db, path) = store();
+        let now = 1_800_000_000.0;
+        let old = now - 40.0 * 86400.0;
+        let mut apps = HashMap::new();
+        apps.insert("browser".to_string(), (70, 10));
+        db.record(old, "wlan0", 100, 20, &apps).unwrap();
+        db.prune(now).unwrap();
+        let history = db.history("months", "wlan0", now).unwrap();
+        assert_eq!(history["totals"]["rx"], 100);
+        assert_eq!(history["totals"]["tx"], 20);
+        assert_eq!(history["apps"][0]["name"], "browser");
+        assert_eq!(history["apps"][0]["rx"], 70);
+        assert_eq!(history["series"].as_array().unwrap().len(), 12);
+        let mut wal_path = path.as_os_str().to_os_string();
+        wal_path.push("-wal");
+        let main_bytes = std::fs::metadata(&path).unwrap().len();
+        let wal_bytes = std::fs::metadata(Path::new(&wal_path))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        assert_eq!(db.size_bytes().unwrap(), main_bytes + wal_bytes);
+        drop(db);
+        cleanup(&path);
     }
 }

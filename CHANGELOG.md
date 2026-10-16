@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 - 2026-10-16
+
+### Added
+
+- Calendar-based chart ranges for seven daily bars, twelve weeks, twelve months, and five years.
+- Compact daily traffic and program archives retained for up to five years after detailed minute records expire.
+- A live history database size readout that includes SQLite write-ahead log data.
+
 ## 1.1.1 - 2026-10-16
 
 ### Fixed
