@@ -1,0 +1,18 @@
+[package]
+name = "data-watch"
+version = "1.0.0"
+edition = "2021"
+description = "A small local Ubuntu network usage monitor"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["bandwidth", "network-monitor", "linux", "privacy"]
+categories = ["command-line-utilities", "network-programming"]
+
+[dependencies]
+libc = "=0.2.175"
+libsqlite3-sys = { version = "=0.30.1", features = ["bundled"] }
+serde_json = "=1.0.145"
+tiny_http = "=0.12.0"
+
+[profile.release]
+strip = true

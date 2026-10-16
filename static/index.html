@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#070b08">
+  <title>Data Watch</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="preload" href="/fonts/ibm-plex-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <canvas id="matrix-rain" aria-hidden="true"></canvas>
+  <main>
+    <header class="masthead">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div><p class="eyebrow">LOCAL NETWORK INTELLIGENCE</p><h1>Data Watch<span class="status-dot" aria-hidden="true"></span></h1><p class="subtitle">Your hotspot data, accounted for.</p></div>
+      </div>
+      <div class="signal-card panel-inset" aria-label="Live network activity">
+        <div class="signal-heading"><span class="eyebrow">LIVE THROUGHPUT</span><span id="signal-state" class="signal-state" data-active="false">IDLE</span></div>
+        <div class="signal-readout"><div id="signal-bars" class="signal-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><strong id="signal-rate">0 B/s</strong></div>
+        <p id="signal-directions" class="signal-directions">↓ 0 B/s <span>·</span> ↑ 0 B/s</p>
+      </div>
+      <div class="connection panel-inset"><div class="connection-label"><span>Watching connection</span><span class="live-chip"><i></i> LIVE</span></div><div id="interface-options" class="interface-options" role="radiogroup" aria-label="Watching connection"><label class="interface-choice"><input type="radio" name="interface" value="auto"><span>Automatic</span></label></div><p id="connection-note">Connecting to local monitor...</p></div>
+    </header>
+
+    <div id="network-error" class="notice error" role="alert" hidden></div>
+    <div id="collector-error" class="notice error" role="alert" hidden></div>
+    <div id="mode-notice" class="notice" hidden></div>
+
+    <section aria-label="Usage summary" class="summary-section">
+      <div class="section-heading overview-heading"><div><p class="eyebrow">YOUR DATA PICTURE</p><h2 class="section-title">Usage overview</h2></div><div class="summary-actions"><div class="range-group" role="group" aria-label="Usage period"><button type="button" data-range="today" aria-pressed="true">Today</button><button type="button" data-range="hour" aria-pressed="false">Last hour</button><button type="button" data-range="week" aria-pressed="false">7 days</button></div><a id="export" href="/api/export?range=today" download>Export CSV <span aria-hidden="true">↗</span></a></div></div>
+      <div class="metrics">
+        <div class="metric total"><p id="total-label">Data used today</p><strong id="total">...</strong><span id="since">Waiting for first reading</span></div>
+        <div class="metric"><p><span class="legend-dot download"></span> Downloaded</p><strong id="download">...</strong><span>Received · <b id="download-share" class="metric-share">0.0% of total</b></span></div>
+        <div class="metric"><p><span class="legend-dot upload"></span> Uploaded</p><strong id="upload">...</strong><span>Sent · <b id="upload-share" class="metric-share">0.0% of total</b></span></div>
+        <div class="metric live-metric"><p>Current rate</p><strong id="live">...</strong><span id="live-detail">Refreshing every 3 seconds</span></div>
+      </div>
+    </section>
+
+    <section class="panel timeline-panel" aria-labelledby="timeline-heading">
+      <div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2 id="timeline-heading">When did it happen?</h2><p class="muted">Select a time window to inspect its program activity.</p></div><div class="legend"><span><i class="legend-dot download"></i>Download</span><span><i class="legend-dot upload"></i>Upload</span></div></div>
+      <div id="timeline" class="timeline" role="group" aria-label="Usage by time"></div>
+      <div class="timeline-axis"><span id="axis-start"></span><span id="axis-mid"></span><span id="axis-end"></span></div>
+      <p id="timeline-description" class="timeline-description">History starts when monitoring begins. Leave Data Watch running to build a picture of your usage.</p>
+    </section>
+
+    <section class="panel apps-panel" aria-labelledby="apps-heading">
+      <div class="section-heading app-heading"><div><p class="eyebrow">WHO IS USING IT</p><h2 id="apps-heading">Programs</h2><p id="apps-description" class="muted">Programs observed in this period.</p></div><div class="app-tools"><button type="button" id="clear-selection" hidden>Show whole period</button><label class="sort-label" for="sort">Sort by <select id="sort"><option value="total">Data used</option><option value="current">Current speed</option></select></label></div></div>
+      <div class="table-scroll"><table><thead><tr><th scope="col">Program · select for history</th><th scope="col" class="numeric">Downloaded</th><th scope="col" class="numeric">Uploaded</th><th scope="col" class="numeric">Total</th><th scope="col" class="numeric current-column">Now</th></tr></thead><tbody id="apps"></tbody></table></div>
+      <p id="apps-empty" class="empty" hidden>No program traffic recorded yet. Use your connection and check back in a moment.</p>
+      <p id="unattributed" class="attribution-note" hidden></p>
+    </section>
+
+    <section class="panel app-history-panel" id="app-history-panel" aria-labelledby="app-history-heading" hidden>
+      <div class="section-heading"><div><p class="eyebrow">PROGRAM DETAIL</p><h2 id="app-history-heading"><span id="history-app-name">Program</span> history</h2><p id="history-description" class="muted">Data usage over this period.</p></div><button type="button" id="close-app-history" class="quiet-button">Close history</button></div>
+      <div class="history-totals"><div><span>Downloaded</span><strong id="history-download">0 B</strong></div><div><span>Uploaded</span><strong id="history-upload">0 B</strong></div><div><span>Total</span><strong id="history-total">0 B</strong></div></div>
+      <div class="history-chart-wrap"><div id="app-history-chart" class="history-chart" role="img" aria-label="Selected program usage by time"></div></div>
+      <div class="timeline-axis"><span id="history-axis-start"></span><span id="history-axis-mid"></span><span id="history-axis-end"></span></div>
+      <p id="history-empty" class="empty" hidden>No attributed traffic for this program in the selected period.</p>
+    </section>
+
+    <section class="panel alerts-panel" aria-labelledby="alerts-heading">
+      <div class="section-heading"><div><p class="eyebrow">STAY AHEAD</p><h2 id="alerts-heading">Desktop data alert</h2><p class="muted">Get a system notification when today's connection usage reaches your limit.</p></div><span class="notification-badge" id="notification-badge">Checking notifications…</span></div>
+      <form id="alert-form" class="alert-controls">
+        <label class="alert-toggle" for="alert-enabled"><input id="alert-enabled" type="checkbox"><span class="toggle-track" aria-hidden="true"></span><span>Enable daily alert</span></label>
+        <label class="alert-limit-label" for="alert-limit">Notify me at</label>
+        <div class="limit-input"><input id="alert-limit" type="number" min="0.1" max="1024" step="0.1" value="1" inputmode="decimal" aria-label="Daily data limit in GiB"><span>GiB</span></div>
+        <button type="submit" class="primary-button">Save alert</button>
+        <button type="button" id="test-alert" class="quiet-button">Send test</button>
+      </form>
+      <p class="alert-footnote" id="alert-message" aria-live="polite">Notifications appear while your desktop session is running, even when this dashboard is closed. The monitor checks the selected connection.</p>
+    </section>
+
+    <footer><span><i class="footer-led"></i>Local monitor <span aria-hidden="true">·</span> No cloud account</span><span id="updated" aria-live="polite">Waiting for monitor</span></footer>
+    <p class="footnote">Network totals cover the selected connection, including local traffic and background services. Program attribution may be incomplete and may not add up to the connection total. History is kept locally for 30 days.</p>
+    <p id="tracking-help" class="footnote tracking-help">Enable persistent TCP + UDP program tracking: run <code>~/.local/bin/data-watch full</code> in a terminal. Ubuntu will ask for your password once to install the capture service. It then runs after logout and reboot.</p>
+  </main>
+</body>
+</html>
