@@ -1,6 +1,7 @@
 mod capture;
 mod capture_install;
 mod collector;
+mod memory;
 mod ownership;
 mod packet;
 mod storage;
@@ -179,6 +180,10 @@ fn serve_http(collector: Arc<collector::Collector>, port: u16) -> Result<(), Str
                 .find_map(|pair| pair.strip_prefix("range="))
                 .unwrap_or("today");
             match path {
+                "/api/memory" => match collector.memory_status(period) {
+                    Ok(value) => json_response(200, value),
+                    Err(error) => json_response(400, json!({"error":error})),
+                },
                 "/api/status" | "/api/export" => match collector.status(period) {
                     Ok(value) if path == "/api/export" => csv_response(&value, period),
                     Ok(value) => json_response(200, value),

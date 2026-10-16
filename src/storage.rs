@@ -121,6 +121,12 @@ impl Store {
              CREATE TABLE IF NOT EXISTS apps_daily (
                 day_ts INTEGER, interface TEXT, name TEXT, rx INTEGER, tx INTEGER,
                 last_seen REAL, PRIMARY KEY(day_ts, interface, name));
+             CREATE TABLE IF NOT EXISTS memory_samples (
+                ts INTEGER PRIMARY KEY,total INTEGER,used_peak INTEGER,available_min INTEGER,swap_peak INTEGER,
+                psi_some_peak REAL,psi_full_peak REAL,used_sum INTEGER,samples INTEGER,
+                swap_in INTEGER,swap_out INTEGER,oom_kills INTEGER,swap_total INTEGER);
+             CREATE TABLE IF NOT EXISTS memory_apps (
+                ts INTEGER,name TEXT,rss_peak INTEGER,swap_peak INTEGER,processes_peak INTEGER,PRIMARY KEY(ts,name));
              CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);",
         )?;
         Ok(store)
@@ -253,7 +259,7 @@ impl Store {
             )?;
             apps.bind_i64(1, cutoff)?;
             apps.expect_done()?;
-            for table in ["traffic", "apps"] {
+            for table in ["traffic", "apps", "memory_samples", "memory_apps"] {
                 let mut stmt = self.prepare(&format!("DELETE FROM {table} WHERE ts < ?1"))?;
                 stmt.bind_i64(1, cutoff)?;
                 stmt.expect_done()?;
@@ -375,6 +381,152 @@ impl Store {
             "series": series,
             "first_recorded_at": first
         }))
+    }
+
+    pub fn record_memory(&mut self, sample: &crate::memory::Sample) -> Result<(), String> {
+        self.exec("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            let mut row = self.prepare(
+                "INSERT INTO memory_samples VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1,?9,?10,?11,?12)
+                 ON CONFLICT(ts) DO UPDATE SET total=excluded.total,
+                 used_peak=MAX(used_peak,excluded.used_peak),available_min=MIN(available_min,excluded.available_min),
+                 swap_peak=MAX(swap_peak,excluded.swap_peak),psi_some_peak=MAX(psi_some_peak,excluded.psi_some_peak),
+                 psi_full_peak=MAX(psi_full_peak,excluded.psi_full_peak),used_sum=used_sum+excluded.used_sum,
+                 samples=samples+1,swap_in=swap_in+excluded.swap_in,swap_out=swap_out+excluded.swap_out,
+                 oom_kills=oom_kills+excluded.oom_kills,swap_total=excluded.swap_total",
+            )?;
+            row.bind_i64(1, (sample.ts as i64).div_euclid(60) * 60)?;
+            row.bind_u64(2, sample.total)?;
+            row.bind_u64(3, sample.used())?;
+            row.bind_u64(4, sample.available)?;
+            row.bind_u64(5, sample.swap_used)?;
+            // -1 preserves unavailable PSI separately from a measured zero.
+            row.bind_double(6, sample.psi_some.unwrap_or(-1.0))?;
+            row.bind_double(7, sample.psi_full.unwrap_or(-1.0))?;
+            row.bind_u64(8, sample.used())?;
+            row.bind_u64(9, sample.swap_in)?;
+            row.bind_u64(10, sample.swap_out)?;
+            row.bind_u64(11, sample.oom_kills)?;
+            row.bind_u64(12, sample.swap_total)?;
+            row.expect_done()?;
+            let mut app = self.prepare(
+                "INSERT INTO memory_apps VALUES (?1,?2,?3,?4,?5)
+                 ON CONFLICT(ts,name) DO UPDATE SET rss_peak=MAX(rss_peak,excluded.rss_peak),
+                 swap_peak=MAX(swap_peak,excluded.swap_peak),processes_peak=MAX(processes_peak,excluded.processes_peak)",
+            )?;
+            for item in sample.programs.iter().take(20) {
+                app.bind_i64(1, (sample.ts as i64).div_euclid(300) * 300)?;
+                app.bind_text(2, &item.name)?;
+                app.bind_u64(3, item.rss)?;
+                app.bind_u64(4, item.swap)?;
+                app.bind_u64(5, item.processes)?;
+                app.expect_done()?;
+                app.reset()?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.exec("COMMIT"),
+            Err(error) => {
+                let _ = self.exec("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    pub fn memory_history(&self, period: &str, now: f64) -> Result<Value, String> {
+        if !matches!(period, "hour" | "today" | "week") {
+            return Err("Choose today, hour, or week for memory history.".into());
+        }
+        let (_, unit, mut starts) = period_buckets(period, now)?;
+        if period == "hour" {
+            let current = (now as i64).div_euclid(300) * 300;
+            starts = (0..12).rev().map(|n| current - n * 300).collect();
+        }
+        let start = starts[0];
+        let bucket = |ts: i64| {
+            if period == "hour" {
+                Ok(ts.div_euclid(300) * 300)
+            } else {
+                bucket_start(ts, unit)
+            }
+        };
+        let mut rows: HashMap<i64, Value> = starts.iter().map(|ts| {
+            let end = if period == "hour" { Ok(*ts + 300) } else { next_bucket(*ts, unit) }?;
+            Ok((*ts, json!({"ts":ts,"end":end,"samples":0,"used_sum":0,"used_peak":0,"available_min":null,
+                "total":0,"swap_peak":0,"swap_total":0,"psi_some_peak":null,"psi_full_peak":null,"swap_in":0,"swap_out":0,"oom_kills":0,"apps":[]})))
+        }).collect::<Result<_, String>>()?;
+        let mut stmt = self.prepare("SELECT ts,total,used_peak,available_min,swap_peak,psi_some_peak,psi_full_peak,used_sum,samples,swap_in,swap_out,oom_kills,swap_total FROM memory_samples WHERE ts>=?1 ORDER BY ts")?;
+        stmt.bind_i64(1, start)?;
+        while stmt.step()? == SQLITE_ROW {
+            let Some(row) = rows.get_mut(&bucket(stmt.i64(0))?) else {
+                continue;
+            };
+            for (key, index) in [
+                ("used_sum", 7),
+                ("samples", 8),
+                ("swap_in", 9),
+                ("swap_out", 10),
+                ("oom_kills", 11),
+            ] {
+                row[key] = json!(row[key]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_add(stmt.i64(index).max(0) as u64));
+            }
+            for (key, index) in [("used_peak", 2), ("swap_peak", 4)] {
+                row[key] = json!(row[key]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .max(stmt.i64(index).max(0) as u64));
+            }
+            let available = stmt.i64(3).max(0) as u64;
+            row["available_min"] = json!(row["available_min"]
+                .as_u64()
+                .unwrap_or(available)
+                .min(available));
+            row["total"] = json!(stmt.i64(1));
+            row["swap_total"] = json!(stmt.i64(12));
+            for (key, index) in [("psi_some_peak", 5), ("psi_full_peak", 6)] {
+                let value = stmt.double(index);
+                if value >= 0.0 {
+                    row[key] = json!(row[key].as_f64().unwrap_or(value).max(value));
+                }
+            }
+        }
+        let mut stmt = self.prepare("SELECT ts,name,rss_peak,swap_peak,processes_peak FROM memory_apps WHERE ts>=?1 ORDER BY ts")?;
+        stmt.bind_i64(1, start)?;
+        let mut apps: HashMap<(i64, String), (u64, u64, u64)> = HashMap::new();
+        while stmt.step()? == SQLITE_ROW {
+            let key = (bucket(stmt.i64(0))?, stmt.text(1).unwrap_or_default());
+            let entry = apps.entry(key).or_default();
+            entry.0 = entry.0.max(stmt.i64(2).max(0) as u64);
+            entry.1 = entry.1.max(stmt.i64(3).max(0) as u64);
+            entry.2 = entry.2.max(stmt.i64(4).max(0) as u64);
+        }
+        for ((ts, name), (rss, swap, processes)) in apps {
+            if let Some(row) = rows.get_mut(&ts) {
+                row["apps"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"name":name,"rss":rss,"swap":swap,"processes":processes}));
+            }
+        }
+        let series: Vec<_> = starts
+            .into_iter()
+            .filter_map(|ts| rows.remove(&ts))
+            .map(|mut row| {
+                let count = row["samples"].as_u64().unwrap_or(0);
+                row["used_avg"] = if count > 0 {
+                    json!(row["used_sum"].as_u64().unwrap_or(0) / count)
+                } else {
+                    Value::Null
+                };
+                row.as_object_mut().unwrap().remove("used_sum");
+                row
+            })
+            .collect();
+        Ok(json!({"series":series,"retention_days":30}))
     }
 
     fn prepare(&self, sql: &str) -> Result<Statement, String> {
@@ -670,6 +822,86 @@ mod tests {
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+    }
+
+    #[test]
+    fn memory_history_keeps_peaks_not_cumulative_ram_and_survives_restart() {
+        let (mut db, path) = store();
+        let mut sample = crate::memory::Sample {
+            ts: 120.0,
+            total: 16000,
+            available: 10000,
+            available_estimated: false,
+            cache: 5000,
+            swap_total: 2000,
+            swap_used: 100,
+            psi_some: None,
+            psi_full: None,
+            swap_in_total: Some(1000),
+            swap_out_total: Some(2000),
+            oom_total: Some(0),
+            swap_in: 0,
+            swap_out: 0,
+            oom_kills: 0,
+            elapsed: 6.0,
+            programs: vec![crate::memory::Program {
+                name: "editor".into(),
+                rss: 100,
+                swap: 50,
+                processes: 2,
+            }],
+            unreadable_processes: 0,
+        };
+        db.record_memory(&sample).unwrap();
+        sample.ts = 126.0;
+        sample.available = 7000;
+        sample.swap_used = 200;
+        sample.psi_some = Some(12.5);
+        sample.psi_full = Some(2.0);
+        sample.swap_in = 10;
+        sample.swap_out = 20;
+        sample.oom_kills = 1;
+        sample.programs[0].rss = 200;
+        sample.programs[0].swap = 40;
+        sample.programs[0].processes = 3;
+        db.record_memory(&sample).unwrap();
+        let history = db.memory_history("hour", 150.0).unwrap();
+        assert_eq!(history["series"].as_array().unwrap().len(), 12);
+        let rows = history["series"].as_array().unwrap();
+        let row = rows.iter().find(|row| row["ts"] == 0).unwrap();
+        assert_eq!(row["samples"], 2);
+        assert_eq!(row["used_avg"], 7500);
+        assert_eq!(row["used_peak"], 9000);
+        assert_eq!(row["available_min"], 7000);
+        assert_eq!(row["psi_some_peak"], 12.5);
+        assert_eq!(row["oom_kills"], 1);
+        assert_eq!(row["swap_in"], 10);
+        assert_eq!(row["apps"][0]["rss"], 200);
+        assert_eq!(row["apps"][0]["swap"], 50);
+        assert_eq!(row["apps"][0]["processes"], 3);
+        let gap = rows.iter().find(|row| row["samples"] == 0).unwrap();
+        assert!(gap["used_avg"].is_null());
+        assert!(gap["psi_some_peak"].is_null());
+        assert!(db.memory_history("years", 150.0).is_err());
+        assert_eq!(
+            db.memory_history("week", 150.0).unwrap()["series"]
+                .as_array()
+                .unwrap()
+                .len(),
+            7
+        );
+        drop(db);
+        let mut db = Store::open(&path).unwrap();
+        assert_eq!(db.memory_history("hour", 150.0).unwrap(), history);
+        db.prune(40.0 * 86400.0).unwrap();
+        let history = db.memory_history("week", 40.0 * 86400.0).unwrap();
+        assert!(history["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["samples"] == 0 && row["apps"].as_array().unwrap().is_empty()));
+        drop(db);
+        cleanup(&path);
     }
 
     #[test]

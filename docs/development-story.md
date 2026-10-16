@@ -34,3 +34,14 @@ A later review found substantial traffic attributed to active coding-agent proce
 Disconnecting the hotspot also exposed a separate bug: Automatic connection selection cleared the active interface, and history queries used that empty value. The saved records were still present but the dashboard displayed empty totals. The collector now keeps a persistent history interface separately from the current live connection. Disconnection clears live-rate baselines while preserving saved metrics; a restart without a network restores the last history selection. The UI states when it is showing offline history, and exports keep the correct interface label.
 
 Installation now opens the dashboard after checking that the local server is ready, while headless installations print the address. The README lists the Linux, architecture, library, desktop, and service requirements so the single-binary packaging is not mistaken for universal Linux compatibility.
+
+
+## Watching memory when programs freeze
+
+The next question came from a PC with 16 GB of installed RAM that still sometimes froze. A healthy reading after the event cannot explain an earlier slowdown, so the project gained a separate Memory tab and continuous local history. Collection is independent of the selected network interface and does not need the privileged packet helper.
+
+The existing Rust service reads Linux memory totals, available headroom, swap counters, memory PSI, and readable process status files every six seconds. Available memory is more useful than free memory alone because Linux uses spare RAM for reclaimable cache. PSI adds evidence of tasks waiting for memory, while paging and kernel OOM counters help distinguish pressure from a merely large RAM percentage. None of these readings alone proves why an application froze.
+
+To keep overhead modest, process memory uses RSS from status files rather than scanning memory mappings for PSS. The tradeoff is that shared pages can be counted more than once, so the UI explains why program totals need not match physical RAM use. All live groups are available; stored program history keeps the 20 largest groups per sample in five-minute peak windows. System snapshots are summarized by minute, and both memory tables expire after 30 days. Historical values are peaks and minimum headroom rather than cumulative memory allocations, and gaps remain distinguishable from zero use.
+
+The interface reuses the existing colors, font, responsive cards, and program-dialog pattern. Network and Memory have separate history selections. Moving to Memory hides the network-only header controls and polls only the memory endpoint while both collectors continue in the background. No processes are stopped and no swap or cache settings are changed.

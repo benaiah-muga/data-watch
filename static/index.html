@@ -31,7 +31,12 @@
       <div class="connection panel-inset"><div class="connection-label"><span>Watching connection</span><span class="live-chip"><i></i> LIVE</span></div><div id="interface-options" class="interface-options" role="radiogroup" aria-label="Watching connection"><label class="interface-choice"><input type="radio" name="interface" value="auto"><span>Automatic</span></label></div><p id="connection-note">Connecting to local monitor...</p></div>
     </header>
 
+    <nav class="observability-tabs" role="tablist" aria-label="Observability">
+      <button type="button" role="tab" id="network-tab" aria-selected="true" aria-controls="network-view" tabindex="0" data-view="network"><span class="tab-icon" aria-hidden="true">↗</span> Network</button>
+      <button type="button" role="tab" id="memory-tab" aria-selected="false" aria-controls="memory-view" tabindex="-1" data-view="memory"><span class="tab-icon" aria-hidden="true">▥</span> Memory</button>
+    </nav>
     <div id="network-error" class="notice error" role="alert" hidden></div>
+    <div id="network-view" role="tabpanel" aria-labelledby="network-tab">
     <div id="collector-error" class="notice error" role="alert" hidden></div>
     <div id="mode-notice" class="notice" hidden></div>
 
@@ -83,6 +88,37 @@
       <p class="alert-footnote" id="alert-message" aria-live="polite">Data alerts use your desktop notification sound while your session is running, even when this dashboard is closed. The monitor checks the selected connection.</p>
     </section>
 
+    </div>
+    <section id="memory-view" role="tabpanel" aria-labelledby="memory-tab" hidden>
+      <div class="section-heading overview-heading memory-heading"><div><p class="eyebrow">WHEN THE PC SLOWS DOWN</p><h2 class="section-title">Memory</h2><p class="muted">Whole-PC readings, saved locally even without a connection.</p></div><span id="memory-health" class="memory-health">Waiting for a sample</span></div>
+      <div id="memory-error" class="notice error" role="alert" hidden></div>
+      <div id="memory-guidance" class="notice success" role="status">Collecting the first memory sample…</div>
+      <div class="memory-scope"><p id="memory-scope">Live readings · Every 6 seconds</p><button type="button" id="memory-live" class="current-button" hidden>Return to live</button></div>
+      <div class="metrics memory-metrics">
+        <div class="metric total"><p id="memory-used-label">RAM in use</p><strong id="memory-used">…</strong><span id="memory-used-detail">Waiting for a sample</span></div>
+        <div class="metric"><p id="memory-available-label">Available RAM</p><strong id="memory-available">…</strong><span id="memory-available-detail">Includes reclaimable memory</span></div>
+        <div class="metric"><p id="memory-swap-label">Swap in use</p><strong id="memory-swap">…</strong><span id="memory-swap-detail">Waiting for a sample</span></div>
+        <div class="metric"><p id="memory-pressure-label">Memory pressure</p><strong id="memory-pressure">…</strong><span id="memory-pressure-detail">Time tasks stalled, 10 s average</span></div>
+      </div>
+      <div class="memory-capacity" aria-label="RAM utilization"><div id="memory-capacity-fill"></div></div>
+      <p id="memory-cache" class="muted memory-cache">Linux can reclaim cached data when programs need RAM.</p>
+      <section class="panel memory-timeline-panel" aria-labelledby="memory-timeline-heading">
+        <div class="section-heading"><div><p class="eyebrow">FIND THE PRESSURE</p><h2 id="memory-timeline-heading">Memory over time</h2><p class="muted">Select a bar to inspect peak usage and the largest observed programs.</p></div><div class="range-group" role="group" aria-label="Memory history period"><button type="button" data-memory-range="hour" aria-pressed="true">Last hour</button><button type="button" data-memory-range="today" aria-pressed="false">Today</button><button type="button" data-memory-range="week" aria-pressed="false">7 days</button></div></div>
+        <div class="legend memory-legend"><span><i class="legend-dot download"></i>Peak RAM use</span><span><i class="legend-dot memory-pressure-dot"></i>Elevated pressure / OOM</span><span>No bar = no sample</span></div>
+        <div id="memory-timeline" class="timeline memory-timeline" role="group" aria-label="Peak RAM use by time"></div>
+        <div class="timeline-axis"><span id="memory-axis-start"></span><span id="memory-axis-mid"></span><span id="memory-axis-end"></span></div>
+        <p id="memory-history-note" class="timeline-description">Memory history starts with this update. Earlier freezes cannot be reconstructed.</p>
+      </section>
+      <section class="panel" aria-labelledby="memory-programs-heading">
+        <div class="section-heading"><div><p class="eyebrow">WHAT IS HOLDING RAM</p><h2 id="memory-programs-heading">Programs by memory</h2><p id="memory-programs-scope" class="muted">Current resident memory, grouped by program name.</p></div></div>
+        <div id="memory-programs-scroll" class="table-scroll programs-scroll" role="region" aria-label="Program memory list" tabindex="-1"><table><thead><tr><th scope="col">Program · view details</th><th scope="col" class="numeric">RAM (RSS)</th><th scope="col" class="numeric">Swap</th><th scope="col" class="numeric">Processes</th></tr></thead><tbody id="memory-programs"></tbody></table></div>
+        <div class="program-list-actions"><p id="memory-program-count" class="muted"></p><button type="button" id="memory-show-more" class="quiet-button" aria-controls="memory-programs-scroll" aria-expanded="false" hidden>Show more programs</button></div>
+        <p id="memory-programs-empty" class="empty" hidden>No readable program samples yet.</p>
+        <p class="attribution-note">RSS is an estimate of resident physical memory. Shared pages can be counted in multiple processes, so adding program rows does not equal system RAM use. Historical records retain peaks for the 20 largest groups per sample in five-minute windows.</p>
+      </section>
+      <section class="panel" aria-labelledby="memory-evidence-heading"><p class="eyebrow">CLUES, NOT A DIAGNOSIS</p><h2 id="memory-evidence-heading">Pressure and paging</h2><dl class="program-meta memory-evidence"><div><dt>Swap read / write</dt><dd id="memory-paging">…</dd></div><div><dt>Kernel OOM kills</dt><dd id="memory-oom">…</dd></div><div><dt>Last memory sample</dt><dd id="memory-updated">…</dd></div></dl><p class="muted">A high RAM percentage alone does not prove the cause of a freeze. Sustained pressure, paging, or new OOM kills provide stronger clues. CPU, disk, graphics, and application faults can also cause freezes. No programs are stopped or settings changed by this monitor.</p></section>
+      <dialog id="memory-program-dialog" class="program-dialog" aria-labelledby="memory-program-title"><div class="section-heading"><div><p class="eyebrow">PROGRAM MEMORY</p><h2 id="memory-program-title">Program</h2></div><button type="button" id="memory-program-close" class="quiet-button" autofocus>Close details</button></div><p id="memory-program-scope" class="muted"></p><div class="history-totals"><div><span>RAM (RSS)</span><strong id="memory-program-rss">…</strong></div><div><span>Swap</span><strong id="memory-program-swap">…</strong></div><div><span>Processes</span><strong id="memory-program-processes">…</strong></div></div><p id="memory-program-share" class="muted"></p><p class="program-detail-note">Matching process names are grouped. RSS includes shared pages. A high number does not by itself establish a memory leak or explain a freeze.</p></dialog>
+    </section>
     <footer><span><i class="footer-led"></i>Local monitor <span aria-hidden="true">·</span> No cloud account</span><span>History database <strong id="database-size" aria-label="History database size including pending writes">…</strong></span><span id="updated" aria-live="polite">Waiting for monitor</span></footer>
     <p class="footnote">Network totals cover the selected connection, including local traffic and background services. Program attribution may be incomplete and may not add up to the connection total. Detailed history is kept locally for 30 days and compact daily summaries for up to 5 years.</p>
     <p id="tracking-help" class="footnote tracking-help">Enable persistent TCP + UDP program tracking: run <code>~/.local/bin/data-watch full</code> in a terminal. Ubuntu will ask for your password once to install the capture service. It then runs after logout and reboot.</p>

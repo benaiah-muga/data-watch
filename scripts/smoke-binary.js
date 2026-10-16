@@ -93,6 +93,18 @@ async function main() {
     const status = await request(port, "/api/status?range=today");
     assert(status.status === 200, "status API failed");
     const statusValue = JSON.parse(status.body);
+    const memoryResponse = await request(port, "/api/memory?range=hour");
+    assert.strictEqual(memoryResponse.status, 200, "memory API failed");
+    const memory = JSON.parse(memoryResponse.body);
+    assert(memory.live && memory.live.total > 0, "memory collector did not produce a live sample");
+    assert.strictEqual(memory.live.used, memory.live.total - memory.live.available);
+    assert(memory.live.available >= 0 && memory.live.available <= memory.live.total);
+    assert.strictEqual(memory.series.length, 12, "last-hour memory history must use five-minute windows");
+    assert(memory.series.some((row) => row.samples > 0), "memory history was not persisted");
+    assert(memory.live.programs.length > 0, "program memory list is empty");
+    assert.strictEqual(JSON.parse((await request(port, "/api/memory?range=week")).body).series.length, 7);
+    assert.strictEqual((await request(port, "/api/memory?range=years")).status, 400);
+    assert(page.body.includes('role="tab" id="memory-tab"') && js.body.includes("renderMemory"), "embedded memory UI is missing");
     assert.strictEqual(statusValue.alerts.notifications_available, true, "notification command stub was not detected");
     const save = await request(port, "/api/alerts", "POST", { threshold_bytes: 536870912 });
     assert.strictEqual(save.status, 200, "could not save alert setting");

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0 - 2026-10-16
+
+### Added
+
+- A keyboard-accessible Memory tab with RAM, available headroom, swap, paging, Linux memory pressure, and kernel OOM-kill observations.
+- Always-on memory sampling independent of network connectivity, with 30 days of local system and top-program history.
+- Selectable memory history, interval peaks, Return to live, program detail dialogs, and an expandable ten-row program list.
+- Documented measurement limits, shared-memory double counting, unavailable kernel metrics, and pressure heuristics.
+
 ## 1.3.1 - 2026-10-16
 
 ### Fixed

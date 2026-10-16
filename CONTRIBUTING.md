@@ -12,6 +12,8 @@ cargo fmt --check
 cargo test --locked --offline
 cargo clippy --locked --offline -- -D warnings
 node --check static/app.js
+node scripts/ui-check.js
+node scripts/smoke-binary.js
 python3 scripts/collector-check.py
 python3 scripts/capture-install-check.py
 bash scripts/verify-collector.sh
@@ -24,6 +26,7 @@ The collector check uses an unprivileged Linux user/network namespace and loopba
 ## Changes
 
 - Keep stored history compatible when evolving the SQLite schema.
+- Memory collection must keep working offline. Treat RSS as an estimate, distinguish missing PSI from zero, and store sampled peaks rather than summing memory over time.
 - Do not collect URLs, remote addresses, command arguments, or packet contents.
 - Keep local HTTP endpoints bound to loopback and protect state-changing requests.
 - Test desktop notifications with a fake `notify-send` in automated checks; reserve real desktop popups for a deliberate manual test.

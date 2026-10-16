@@ -57,6 +57,7 @@ pub struct Collector {
     store: Arc<Mutex<Store>>,
     capture: UnixDatagram,
     state: Mutex<State>,
+    memory: Mutex<(Option<crate::memory::Sample>, String)>,
 }
 
 impl Collector {
@@ -117,6 +118,7 @@ impl Collector {
         let collector = Arc::new(Self {
             store,
             capture,
+            memory: Mutex::new((None, String::new())),
             state: Mutex::new(State {
                 interface: String::new(),
                 history_interface,
@@ -140,6 +142,51 @@ impl Collector {
             }),
         });
         Ok(collector)
+    }
+
+    pub fn memory_status(&self, period: &str) -> Result<Value, String> {
+        let (live, error) = {
+            let memory = self
+                .memory
+                .lock()
+                .map_err(|_| "Memory state is unavailable.")?;
+            (
+                memory.0.as_ref().map(|sample| sample.json()),
+                memory.1.clone(),
+            )
+        };
+        let mut result = self
+            .store
+            .lock()
+            .map_err(|_| "Storage lock is unavailable.")?
+            .memory_history(period, unix_time())?;
+        result["database_size_bytes"] = json!(self
+            .store
+            .lock()
+            .map_err(|_| "Storage lock is unavailable.")?
+            .size_bytes()?);
+        result["live"] = json!(live);
+        result["error"] = json!(error);
+        result["sample_interval_seconds"] = json!(6);
+        Ok(result)
+    }
+
+    fn sample_memory(&self, now: f64) {
+        let Ok(mut memory) = self.memory.lock() else {
+            return;
+        };
+        match crate::memory::Sample::read(Path::new("/proc"), now, memory.0.as_ref()) {
+            Ok(sample) => {
+                let result = self
+                    .store
+                    .lock()
+                    .map_err(|_| "Storage lock is unavailable.".to_string())
+                    .and_then(|mut store| store.record_memory(&sample));
+                memory.1 = result.err().unwrap_or_default();
+                memory.0 = Some(sample);
+            }
+            Err(error) => memory.1 = error,
+        }
     }
 
     pub fn status(&self, period: &str) -> Result<Value, String> {
@@ -305,10 +352,15 @@ impl Collector {
     fn poll_loop(self: Arc<Self>) {
         let mut last_tick = std::time::Instant::now();
         let mut prune_at = 0.0;
+        let mut memory_at = 0.0;
         loop {
             let now = unix_time();
             let tick = std::time::Instant::now();
             let elapsed = tick.duration_since(last_tick).as_secs_f64().max(0.1);
+            if now >= memory_at {
+                self.sample_memory(now);
+                memory_at = now + 6.0;
+            }
             let result = self.sample(now, elapsed);
             if now >= prune_at {
                 if let Ok(mut store) = self.store.lock() {
@@ -866,6 +918,15 @@ mod tests {
         collector
             .sample_with_interface(now, 2.0, |_| String::new())
             .unwrap();
+        collector.sample_memory(now);
+        let memory = collector.memory_status("hour").unwrap();
+        assert!(memory["live"]["total"].as_u64().unwrap() > 0);
+        assert!(memory["error"].as_str().unwrap().is_empty());
+        assert!(memory["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["samples"].as_u64().unwrap() > 0));
         let offline = collector.status("hour").unwrap();
         assert_eq!(offline["interface"], "");
         assert_eq!(offline["history_interface"], "saved-wifi");

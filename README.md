@@ -8,6 +8,8 @@
 
 My phone's hotspot report showed that my PC was using about 80% of my mobile data. I was mostly using Codex in VS Code and searching the web, so I wanted a small tool that could answer two questions: when is the data being used, and which programs can be tied to it? Data Watch records connection totals and best-effort program estimates locally, then shows them in a private dashboard.
 
+Data Watch also includes a **Memory** tab for investigating slowdowns with RAM, swap, memory pressure, and program memory history.
+
 Data Watch is currently for **Ubuntu Linux**. Windows and macOS support are future work because each operating system exposes network and desktop notification features differently.
 
 Read the [development story](docs/development-story.md) for the collector and interface challenges, and [our coding-agent bandwidth investigation](docs/coding-agent-data-usage.md) for why a day of agent-assisted coding approached 400 MB and what can help reduce it.
@@ -87,6 +89,27 @@ A phone or another PC cannot reach this loopback address. Data Watch currently s
 
 Times use the PC's local timezone and sizes use binary units (MiB, GiB). The collector samples every two seconds and stores detailed data by minute for 30 days, then compacts older traffic into daily summaries retained for up to five years.
 
+## Memory observability
+
+Open the **Memory** tab, or go directly to <http://127.0.0.1:8765/#memory>. It uses the existing service and works without Wi-Fi or the packet-capture helper. No extra packages, root access, or cloud connection are required.
+
+- Live physical RAM use, available RAM, swap use, directional swap paging rates, and Linux memory pressure (PSI).
+- Kernel OOM-kill counters since boot and new kills observed between samples. This does not identify the killed process or include every desktop/application termination.
+- Programs grouped by Linux process name, ranked by resident memory (RSS), with swap and process counts. Select any row for details. Ten groups appear initially; expand the list to scroll through more.
+- Selectable history for the last hour (five-minute bars), today (15-minute bars), and seven days (one bar per day). Selecting a bar shows interval peaks and the largest recorded programs; **Return to live** restores current readings.
+
+The collector reads `/proc/meminfo`, `/proc/pressure/memory`, `/proc/vmstat`, and readable `/proc/<pid>/status` files every six seconds, even while the dashboard is closed or the hotspot is disconnected. Memory snapshots are summarized by minute. Program history retains peak RSS, swap, and process counts for the 20 largest groups in each sample, grouped into five-minute windows. Both are retained for 30 days in the same private SQLite database; memory history begins when this version is installed. Missing samples remain gaps. Historical RAM, swap, pressure, and program peaks are not necessarily simultaneous.
+
+RAM in use means total minus Linux's available-memory estimate, which includes reclaimable memory. The separate cache estimate is informational, not an extra amount to add to RAM use. If `MemAvailable` is missing, a labelled fallback estimate is used. PSI shows the percentage of time tasks stalled for memory, not a percentage of RAM occupied. Missing PSI or paging counters are reported as unavailable.
+
+The interface highlights low headroom (90% or 95% RAM use), elevated PSI (`some` at 5%/20%, or `full` at 1%/5%), and newly observed kernel OOM kills. These are explanatory heuristics, not a diagnosis or a universal freeze threshold. High cached memory is not automatically a fault. CPU load, disk waits, graphics drivers, and application faults can also cause freezes. This feature only observes; it does not stop programs, clear caches, resize swap, or change system settings.
+
+RSS readings are lightweight estimates and can double-count shared pages across processes. Their sum need not equal system RAM use, and a large program row alone does not establish a memory leak. Short spikes can fall between samples; collection cannot run while the PC is suspended. Names are Linux process names, which may be truncated, and protected processes may be unreadable. We deliberately avoid the heavier per-mapping scans needed for proportional set size (PSS).
+
+A 20-second check on the development PC measured about 5.5 MiB RSS for the updated background service versus 5.2 MiB for the preceding version, and 2.9% versus 2.3% CPU on one core (including waited child processes). This short observation excludes the browser and packet helper and is not a guarantee on other systems. No runtime dependencies were added.
+
+See the Linux kernel documentation for [available memory and RSS](https://docs.kernel.org/filesystems/proc.html) and [pressure stall information](https://docs.kernel.org/accounting/psi.html).
+
 ## Attribution and privacy
 
 Connection totals come from Linux interface counters and include background services and local network traffic, so they can differ from carrier billing. Basic program attribution uses TCP socket counters. It can miss UDP/QUIC traffic, short-lived connections, some privileged processes, and VPN inner traffic. Browser traffic is grouped under Chrome or Firefox; tabs and VS Code extensions sharing a process cannot be separated. The dashboard shows traffic that could not be attributed instead of assigning it to a guessed program.
@@ -109,7 +132,7 @@ sudo rm "/etc/systemd/system/data-watch-capture-$(id -u).service" "/usr/local/li
 sudo systemctl daemon-reload
 ```
 
-Recorded history contains timestamps, connection names, program names, and byte counts. Data Watch does not save URLs, remote addresses, command arguments, or packet contents. It makes no analytics or cloud requests. Desktop alerts use the local Linux notification service.
+Recorded history contains timestamps, connection names, program names, network byte counts, and aggregate memory/paging/pressure measurements. Memory history includes grouped resident memory, swap, and process-count peaks; process IDs are not saved. Data Watch does not save URLs, remote addresses, command arguments, or packet contents. It makes no analytics or cloud requests. Desktop alerts use the local Linux notification service.
 
 ## Manage the service
 
@@ -145,6 +168,7 @@ cargo fmt --check
 cargo test --locked --offline
 cargo clippy --locked --offline -- -D warnings
 node --check static/app.js
+node scripts/ui-check.js
 ```
 
 The project is licensed under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0). The bundled IBM Plex Sans font is licensed separately under the SIL Open Font License in `static/fonts/OFL.txt`. See [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).

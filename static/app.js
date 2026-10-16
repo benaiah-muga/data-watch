@@ -16,7 +16,7 @@
 
   updateClock();
   window.setInterval(updateClock, 1000);
-  const state = { range: "today", sort: "total", data: null, selected: null, selectedApp: null, returnProgram: null, appsExpanded: false, buckets: [], signalHistory: [], busy: false, timer: null, queued: false };
+  const state = { view: "network", range: "today", sort: "total", data: null, selected: null, selectedApp: null, returnProgram: null, appsExpanded: false, buckets: [], signalHistory: [], busy: false, timer: null, queued: false };
   const labels = { today: "today", hour: "in the last hour", week: "in the last 7 days", weeks: "in the last 12 weeks", months: "in the last 12 months", years: "in the last 5 years" };
   const number = (value) => Math.max(0, Number(value) || 0);
   const bytes = (value) => {
@@ -44,6 +44,199 @@
   }
   const set = (id, value) => { $(id).textContent = value; };
   const notice = (id, message) => { set(id, message); $(id).hidden = !message; };
+
+  const memoryState = { range: "hour", data: null, selected: null, expanded: false, program: null, returnProgram: null };
+  const percentage = (value, total) => total > 0 ? `${(number(value) / total * 100).toFixed(1)}%` : "0.0%";
+  const pressureText = (value) => value == null ? "Unavailable" : `${number(value).toFixed(2)}%`;
+
+  function memoryRows() {
+    if (!memoryState.data) return [];
+    if (memoryState.selected == null) return memoryState.data.live?.programs || [];
+    return (memoryState.data.series || []).find((row) => row.ts === memoryState.selected)?.apps || [];
+  }
+
+  function renderMemoryProgram() {
+    if (!memoryState.program) return;
+    const row = memoryRows().find((item) => item.name === memoryState.program);
+    set("memory-program-title", memoryState.program);
+    set("memory-program-rss", row ? bytes(row.rss) : "Not in sample");
+    set("memory-program-swap", row ? bytes(row.swap) : "Not in sample");
+    set("memory-program-processes", row ? number(row.processes).toLocaleString() : "0");
+    set("memory-program-scope", memoryState.selected == null ? "Latest sample. Values update while this card is open." : "Peaks in the selected interval. RAM, swap, and process-count peaks may occur at different times.");
+    const total = memoryState.data?.live?.total;
+    set("memory-program-share", row && total ? `${percentage(row.rss, total)} of current physical RAM (RSS estimate, including shared pages).` : "Program samples may be missing when a process exits or cannot be read.");
+  }
+
+  function renderMemory(data) {
+    memoryState.data = data;
+    const live = data.live;
+    const selected = (data.series || []).find((row) => row.ts === memoryState.selected);
+    if (!selected) memoryState.selected = null;
+    const historical = Boolean(selected);
+    const total = number(historical ? selected.total : live?.total);
+    const used = number(historical ? selected.used_peak : live?.used);
+    const available = number(historical ? selected.available_min : live?.available);
+    const swap = number(historical ? selected.swap_peak : live?.swap_used);
+    const swapTotal = number(historical ? selected.swap_total : live?.swap_total);
+    const some = historical ? selected.psi_some_peak : live?.psi_some;
+    const full = historical ? selected.psi_full_peak : live?.psi_full;
+    const oom = number(historical ? selected.oom_kills : live?.oom_kills);
+    const ratio = total ? used / total * 100 : 0;
+    const level = !total ? "unknown" : oom > 0 || ratio >= 95 || some >= 20 || full >= 5 ? "critical" : ratio >= 90 || some >= 5 || full >= 1 ? "warning" : "normal";
+    const stale = live && Date.now() / 1000 - live.ts > 20;
+    const health = $("memory-health");
+    health.dataset.level = level;
+    health.textContent = !total ? "WAITING FOR A SAMPLE" : stale && !historical ? "SAMPLE IS STALE" : `${historical ? "RECORDED" : "LIVE"} · ${level === "normal" ? "HEADROOM AVAILABLE" : level === "warning" ? "WATCH MEMORY" : "MEMORY UNDER STRAIN"}`;
+    const guidance = !total ? "Collecting memory readings. Keep the monitor running to capture the next slowdown." : level === "normal" ? "Memory has headroom in this view. A freeze can still have another cause, or happen between samples." : oom > 0 ? "The kernel recorded an out-of-memory kill in this interval. Check the busy programs and system logs; no program was stopped by Data Watch." : "Low available RAM or elevated pressure was observed. Look for sustained pressure and swap activity before attributing a freeze to memory.";
+    notice("memory-guidance", guidance);
+    $("memory-guidance").classList.toggle("success", level === "normal");
+    $("memory-guidance").classList.toggle("error", level === "critical");
+    notice("memory-error", [data.error, stale ? "The latest sample is over 20 seconds old; these readings may be out of date." : ""].filter(Boolean).join(" "));
+    set("memory-scope", historical ? `${date(selected.ts, true)} to ${date(selected.end, true)} · Interval peaks` : "Live readings · Every 6 seconds");
+    $("memory-live").hidden = !historical;
+    set("memory-used-label", historical ? "Peak RAM in use" : "RAM in use");
+    set("memory-available-label", historical ? "Lowest available RAM" : "Available RAM");
+    set("memory-swap-label", historical ? "Peak swap in use" : "Swap in use");
+    set("memory-pressure-label", historical ? "Peak memory pressure" : "Memory pressure");
+    set("memory-used", total ? bytes(used) : "…");
+    set("memory-used-detail", total ? `${percentage(used, total)} of ${bytes(total)} physical RAM` : "Waiting for a sample");
+    set("memory-available", total ? bytes(available) : "…");
+    set("memory-available-detail", total ? `${percentage(available, total)} available${!historical && live.available_estimated ? " (fallback estimate)" : ", including reclaimable memory"}` : "Waiting for a sample");
+    set("memory-swap", total ? bytes(swap) : "…");
+    set("memory-swap-detail", !total ? "Waiting for a sample" : swapTotal ? `${percentage(swap, swapTotal)} of ${bytes(swapTotal)} configured` : "No swap configured");
+    set("memory-pressure", pressureText(some));
+    set("memory-pressure-detail", full == null ? "Kernel PSI not available" : `All tasks stalled: ${pressureText(full)}${historical ? " peak" : " (10 s avg)"}`);
+    $("memory-capacity-fill").style.setProperty("--usage", `${Math.min(100, ratio)}%`);
+    $("memory-capacity-fill").dataset.level = level;
+    set("memory-cache", historical ? "Peaks and minimum headroom may occur at different times within this interval. RAM use means total minus available memory." : live ? `Reclaimable cache estimate: ${bytes(live.cache)}. Linux can reuse cache when programs need RAM; cached memory is not automatically a problem.` : "Linux can reclaim cached data when programs need RAM.");
+    const series = data.series || [];
+    const timeline = $("memory-timeline");
+    const focusedBucket = timeline.contains(document.activeElement) ? document.activeElement?.dataset.ts : null;
+    timeline.replaceChildren(...series.map((row) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "time-bucket";
+      button.dataset.ts = row.ts;
+      button.disabled = !row.samples;
+      button.setAttribute("aria-pressed", String(row.ts === memoryState.selected));
+      const label = `${date(row.ts, true)} to ${date(row.end, true)}: ${row.samples ? `peak RAM ${bytes(row.used_peak)}, available minimum ${bytes(row.available_min)}, pressure ${pressureText(row.psi_some_peak)}, ${number(row.oom_kills)} OOM kills` : "no samples"}`;
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      if (row.samples) {
+        const bar = document.createElement("span");
+        bar.className = "memory-bar";
+        bar.style.setProperty("--usage", `${Math.min(100, row.used_peak / Math.max(1, row.total) * 100)}%`);
+        bar.dataset.pressure = String(row.psi_some_peak >= 5 || row.psi_full_peak >= 1 || row.oom_kills > 0);
+        bar.dataset.oom = String(row.oom_kills > 0);
+        button.append(bar);
+      }
+      button.addEventListener("click", () => { memoryState.selected = row.ts; memoryState.expanded = false; renderMemory(data); });
+      return button;
+    }));
+    if (focusedBucket) [...timeline.children].find((button) => button.dataset.ts === focusedBucket)?.focus({ preventScroll: true });
+    const axis = (row) => memoryState.range === "week" ? calendarDate(row.ts, { weekday: "short", day: "numeric" }) : date(row.ts);
+    set("memory-axis-start", series.length ? axis(series[0]) : "");
+    set("memory-axis-mid", series.length ? axis(series[Math.floor(series.length / 2)]) : "");
+    set("memory-axis-end", series.length ? axis(series[series.length - 1]) : "");
+    const samples = series.reduce((sum, row) => sum + number(row.samples), 0);
+    const kills = series.reduce((sum, row) => sum + number(row.oom_kills), 0);
+    set("memory-history-note", samples ? `${samples.toLocaleString()} samples in this period · ${kills} new kernel OOM kills observed · History retained for 30 days. Collection gaps are not zero usage.` : "Memory history starts with this update. Earlier freezes cannot be reconstructed.");
+    const rows = [...memoryRows()].sort((a, b) => number(b.rss) - number(a.rss) || String(a.name).localeCompare(String(b.name)));
+    const scroll = $("memory-programs-scroll");
+    const scrollTop = scroll.scrollTop;
+    const focusedProgram = scroll.contains(document.activeElement) ? document.activeElement.closest("[data-memory-program]")?.dataset.memoryProgram : null;
+    const tbody = $("memory-programs");
+    tbody.replaceChildren(...(memoryState.expanded ? rows : rows.slice(0, 10)).map((row) => {
+      const tr = document.createElement("tr");
+      tr.className = "program-row";
+      tr.dataset.memoryProgram = row.name;
+      const name = document.createElement("td");
+      name.className = "program";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "program-name";
+      button.textContent = row.name;
+      button.setAttribute("aria-label", `View memory details for ${row.name}`);
+      button.setAttribute("aria-haspopup", "dialog");
+      button.setAttribute("aria-controls", "memory-program-dialog");
+      name.append(button);
+      tr.append(name);
+      for (const value of [bytes(row.rss), bytes(row.swap), number(row.processes).toLocaleString()]) {
+        const td = document.createElement("td"); td.className = "numeric"; td.textContent = value; tr.append(td);
+      }
+      tr.addEventListener("click", () => {
+        memoryState.program = row.name;
+        memoryState.returnProgram = row.name;
+        renderMemoryProgram();
+        if (!$("memory-program-dialog").open) {
+          document.body.classList.add("dialog-open");
+          $("memory-program-dialog").showModal();
+        }
+      });
+      return tr;
+    }));
+    scroll.classList.toggle("is-expanded", memoryState.expanded);
+    scroll.scrollTop = memoryState.expanded ? scrollTop : 0;
+    if (focusedProgram) [...tbody.children].find((row) => row.dataset.memoryProgram === focusedProgram)?.querySelector("button")?.focus({ preventScroll: true });
+    $("memory-show-more").hidden = rows.length <= 10;
+    $("memory-show-more").setAttribute("aria-expanded", String(memoryState.expanded));
+    set("memory-show-more", memoryState.expanded ? "Show top 10" : `Show all ${rows.length} programs`);
+    set("memory-program-count", `Showing ${memoryState.expanded ? rows.length : Math.min(10, rows.length)} of ${rows.length} programs`);
+    $("memory-programs-empty").hidden = rows.length > 0;
+    set("memory-programs-scope", historical ? "Peak RSS, swap, and process count in this interval; peaks are not necessarily simultaneous." : `Current RSS, grouped by process name.${live?.unreadable_processes ? ` ${live.unreadable_processes} processes could not be read.` : ""}`);
+    set("memory-paging", historical ? `${bytes(selected.swap_in)} read / ${bytes(selected.swap_out)} written in interval` : live?.paging_available ? `${bytes(live.swap_in_rate)}/s read / ${bytes(live.swap_out_rate)}/s written` : "Unavailable");
+    set("memory-oom", historical ? `${oom} newly observed in interval` : live?.oom_total != null ? `${live.oom_total} since boot · ${live.oom_kills} since previous sample` : "Unavailable");
+    set("memory-updated", live ? date(live.ts, true) : "Waiting for a sample");
+    set("updated", live ? `Memory updated ${date(live.ts)}` : "Waiting for memory sample");
+    set("database-size", bytes(data.database_size_bytes));
+    document.querySelector(".status-dot").classList.add("connected");
+    renderMemoryProgram();
+  }
+
+  function activateView(view, focus = false) {
+    state.view = view;
+    for (const button of document.querySelectorAll("[data-view]")) {
+      const active = button.dataset.view === view;
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+      if (active && focus) button.focus();
+    }
+    $("network-view").hidden = view !== "network";
+    $("memory-view").hidden = view !== "memory";
+    document.querySelectorAll(".signal-card, .connection, .footnote").forEach((element) => { element.hidden = view === "memory"; });
+    history.replaceState(null, "", view === "memory" ? "#memory" : location.pathname);
+    refresh();
+  }
+  document.querySelectorAll("[data-view]").forEach((button) => {
+    button.addEventListener("click", () => activateView(button.dataset.view));
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      activateView(event.key === "Home" ? "network" : event.key === "End" ? "memory" : state.view === "memory" ? "network" : "memory", true);
+    });
+  });
+  document.querySelectorAll("[data-memory-range]").forEach((button) => button.addEventListener("click", () => {
+    memoryState.range = button.dataset.memoryRange;
+    memoryState.selected = null;
+    memoryState.expanded = false;
+    document.querySelectorAll("[data-memory-range]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+    refresh();
+  }));
+  $("memory-live").addEventListener("click", () => { memoryState.selected = null; memoryState.expanded = false; if (memoryState.data) renderMemory(memoryState.data); refresh(); });
+  $("memory-show-more").addEventListener("click", () => { memoryState.expanded = !memoryState.expanded; renderMemory(memoryState.data); });
+  $("memory-program-close").addEventListener("click", () => $("memory-program-dialog").close());
+  $("memory-program-dialog").addEventListener("close", () => {
+    memoryState.program = null;
+    document.body.classList.remove("dialog-open");
+    const row = [...$("memory-programs").children].find((item) => item.dataset.memoryProgram === memoryState.returnProgram);
+    (row?.querySelector("button") || $("memory-tab")).focus({ preventScroll: true });
+  });
+  $("memory-program-dialog").addEventListener("click", (event) => {
+    if (event.target !== $("memory-program-dialog")) return;
+    const bounds = event.target.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) event.target.close();
+  });
+  window.addEventListener("hashchange", () => activateView(location.hash === "#memory" ? "memory" : "network"));
 
   function startMatrixRain() {
     const canvas = $("matrix-rain");
@@ -415,12 +608,16 @@
     if (document.hidden) return;
     clearTimeout(state.timer);
     state.busy = true;
-    const range = state.range;
+    const view = state.view;
+    const range = view === "memory" ? memoryState.range : state.range;
     try {
-      const response = await fetch(`/api/status?range=${encodeURIComponent(range)}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
+      const endpoint = view === "memory" ? "/api/memory" : "/api/status";
+      const response = await fetch(`${endpoint}?range=${encodeURIComponent(range)}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
       if (!response.ok) throw new Error(`Monitor returned HTTP ${response.status}`);
       const data = await response.json();
-      if (range === state.range) render(data);
+      if (view === state.view && range === (view === "memory" ? memoryState.range : state.range)) {
+        if (view === "memory") renderMemory(data); else render(data);
+      }
       notice("network-error", "");
     } catch (error) {
       notice("network-error", `Cannot reach the local monitor. ${error.message}. Check that Data Watch is still running. Displayed readings may be out of date.`);
@@ -521,5 +718,5 @@
   });
   document.addEventListener("visibilitychange", () => { clearTimeout(state.timer); if (!document.hidden) refresh(); });
   startMatrixRain();
-  refresh();
+  activateView(location.hash === "#memory" ? "memory" : "network");
 })();
