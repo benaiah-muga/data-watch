@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 - 2026-10-16
+
+### Fixed
+
+- Prevent the mobile live-throughput and connection cards from inheriting desktop flex basis as oversized fixed heights.
+
 ## 1.1.0 - 2026-10-16
 
 ### Added

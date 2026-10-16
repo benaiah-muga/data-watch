@@ -211,12 +211,12 @@ footer { display: flex; justify-content: space-between; gap: 12px; padding: 4px 
 }
 @media (max-width: 580px) {
   main { padding: 20px 14px 22px; }
-  .masthead { align-items: stretch; flex-direction: column; gap: 17px; padding-bottom: 24px; }
+  .masthead { align-items: stretch; flex-direction: column; flex-wrap: nowrap; gap: 17px; padding-bottom: 24px; }
   .brand-lockup { flex: 0 0 auto; }
   .clock-card { flex: 0 0 auto; }
-  .signal-card { order: 0; width: 100%; }
+  .signal-card { flex: 0 0 auto; order: 0; align-self: stretch; width: 100%; }
   h1 { font-size: 30px; }
-  .connection { width: 100%; max-width: none; }
+  .connection { flex: 0 0 auto; width: 100%; max-width: none; }
   .overview-heading { align-items: flex-start; flex-direction: column; gap: 13px; }
   .summary-actions { width: 100%; flex-wrap: wrap; justify-content: flex-start; gap: 10px; }
   .range-group button { padding: 6px 10px; }
