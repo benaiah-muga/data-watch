@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-10-16
 
 ### Added
 
+- Whole-row program details in an accessible popup card with interval usage, live rate, connection share, last observation, and history.
+- A ten-program default view with an expandable scrollable list that preserves its position during refreshes.
 - A dashboard screenshot and reusable SVG project logo in the README and repository assets.
 
 ## 1.2.0 - 2026-10-16

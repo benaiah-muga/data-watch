@@ -16,7 +16,7 @@
 
   updateClock();
   window.setInterval(updateClock, 1000);
-  const state = { range: "today", sort: "total", data: null, selected: null, selectedApp: null, buckets: [], signalHistory: [], busy: false, timer: null, queued: false };
+  const state = { range: "today", sort: "total", data: null, selected: null, selectedApp: null, returnProgram: null, appsExpanded: false, buckets: [], signalHistory: [], busy: false, timer: null, queued: false };
   const labels = { today: "today", hour: "in the last hour", week: "in the last 7 days", weeks: "in the last 12 weeks", months: "in the last 12 months", years: "in the last 5 years" };
   const number = (value) => Math.max(0, Number(value) || 0);
   const bytes = (value) => {
@@ -134,6 +134,7 @@
       }
       button.addEventListener("click", () => {
         state.selected = state.selected === b.ts ? null : b.ts;
+        state.appsExpanded = false;
         document.querySelectorAll(".time-bucket").forEach((item) => item.setAttribute("aria-pressed", String(item === button && state.selected !== null)));
         renderOverview();
         renderApps();
@@ -183,28 +184,50 @@
     $("metrics").classList.toggle("interval-selected", Boolean(selected));
   }
 
+  function programButton(name) {
+    return [...$("apps").querySelectorAll(".app-history-trigger")].find((button) => button.dataset.program === name);
+  }
+
+  function openProgramDetails(name) {
+    state.selectedApp = name;
+    state.returnProgram = name;
+    renderAppHistory();
+    const dialog = $("app-history-panel");
+    if (!dialog.open) dialog.showModal();
+    document.body.classList.add("dialog-open");
+    $("apps").querySelectorAll(".app-history-trigger").forEach((button) => button.setAttribute("aria-expanded", String(button.dataset.program === name)));
+  }
+
   function renderApps() {
+    if (!state.data) return;
+    const scroll = $("programs-scroll");
+    const scrollTop = scroll.scrollTop;
+    const scrollLeft = scroll.scrollLeft;
+    const focusedProgram = document.activeElement && document.activeElement.classList.contains("app-history-trigger") ? document.activeElement.dataset.program : null;
     const selected = state.buckets.find((b) => b.ts === state.selected);
     const apps = mergeApps(selected ? selected.apps : (Array.isArray(state.data.apps) ? state.data.apps : []));
     const sortCurrent = state.sort === "current" && !selected;
     apps.sort((a, b) => (sortCurrent ? b.rate_rx + b.rate_tx - a.rate_rx - a.rate_tx : b.rx + b.tx - a.rx - a.tx) || a.name.localeCompare(b.name));
+    if (apps.length <= 10) state.appsExpanded = false;
+    const visibleApps = state.appsExpanded ? apps : apps.slice(0, 10);
     const max = Math.max(1, ...apps.map((app) => app.rx + app.tx));
     const fragment = document.createDocumentFragment();
-    for (const app of apps) {
+    for (const app of visibleApps) {
       const row = document.createElement("tr");
+      row.className = "program-row";
+      row.title = `View ${app.name} details`;
+      row.addEventListener("click", () => openProgramDetails(app.name));
       const program = document.createElement("td");
       program.className = "program";
       const name = document.createElement("button");
       name.type = "button";
       name.className = "program-name app-history-trigger";
+      name.dataset.program = app.name;
       name.textContent = app.name;
-      name.title = `Show ${app.name} history`;
-      name.setAttribute("aria-label", `Show ${app.name} usage history`);
-      name.setAttribute("aria-pressed", String(state.selectedApp === app.name));
-      name.addEventListener("click", () => {
-        state.selectedApp = state.selectedApp === app.name ? null : app.name;
-        renderAppHistory();
-      });
+      name.setAttribute("aria-label", `View ${app.name} details`);
+      name.setAttribute("aria-haspopup", "dialog");
+      name.setAttribute("aria-controls", "app-history-panel");
+      name.setAttribute("aria-expanded", String(state.selectedApp === app.name && $("app-history-panel").open));
       const track = document.createElement("span");
       track.className = "usage-track";
       track.setAttribute("aria-hidden", "true");
@@ -223,6 +246,16 @@
       fragment.append(row);
     }
     $("apps").replaceChildren(fragment);
+    scroll.classList.toggle("is-expanded", state.appsExpanded);
+    scroll.tabIndex = state.appsExpanded ? 0 : -1;
+    scroll.scrollTop = state.appsExpanded ? scrollTop : 0;
+    scroll.scrollLeft = scrollLeft;
+    if (focusedProgram) (programButton(focusedProgram) || $("sort")).focus({ preventScroll: true });
+    const more = $("show-more-programs");
+    more.hidden = apps.length <= 10;
+    more.textContent = state.appsExpanded ? "Show top 10" : apps.length > 10 ? `Show ${apps.length - 10} more programs` : "Show more programs";
+    more.setAttribute("aria-expanded", String(state.appsExpanded));
+    set("program-count", !apps.length ? "" : state.appsExpanded ? `${apps.length} programs. Scroll inside the list to see more.` : `Showing ${visibleApps.length} of ${apps.length} programs`);
     $("apps-empty").hidden = apps.length > 0;
     set("apps-empty", selected ? "No programs could be attributed in this time window. The connection may still have used data." : "No program traffic recorded yet. Use your connection and check back in a moment.");
     $("clear-selection").hidden = !selected;
@@ -241,20 +274,32 @@
 
   function renderAppHistory() {
     const panel = $("app-history-panel");
-    if (!state.selectedApp || !state.data) { panel.hidden = true; return; }
-    panel.hidden = false;
+    if (!state.selectedApp || !state.data) { if (panel.open) panel.close(); return; }
     const appName = state.selectedApp;
+    const selected = state.buckets.find((bucket) => bucket.ts === state.selected);
+    const periodApps = Array.isArray(state.data.apps) ? state.data.apps : [];
+    const periodApp = mergeApps(periodApps).find((app) => app.name === appName);
+    const app = (selected ? selected.apps.find((item) => item.name === appName) : periodApp) || { rx: 0, tx: 0 };
+    const connection = selected || state.data.totals || {};
+    const connectionTotal = number(connection.rx) + number(connection.tx);
+    const lastSeen = periodApps.filter((item) => item.name === appName).reduce((latest, item) => Math.max(latest, number(item.last_seen)), 0);
+    const rate = periodApp ? periodApp.rate_rx + periodApp.rate_tx : 0;
     set("history-app-name", appName);
-    set("history-description", `${labels[state.range]}. Select a bar to inspect that time window above.`);
+    set("history-description", selected ? `Usage during ${bucketRangeLabel(selected)}.` : `Usage ${labels[state.range]}.`);
+    set("history-download", bytes(app.rx));
+    set("history-upload", bytes(app.tx));
+    set("history-total", bytes(number(app.rx) + number(app.tx)));
+    set("history-current", `${bytes(rate)}/s`);
+    set("history-status", rate > 0 ? "Transferring" : "No current traffic");
+    set("history-share", connectionTotal ? `${((number(app.rx) + number(app.tx)) / connectionTotal * 100).toFixed(1)}%` : "0%");
+    set("history-last-seen", lastSeen ? new Date(lastSeen * 1000).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "Not recorded");
+    set("history-chart-scope", `Activity ${labels[state.range]}. Select a bar to inspect that interval.`);
     const rows = state.buckets.map((bucket) => {
       const app = bucket.apps.find((item) => item.name === appName) || { rx: 0, tx: 0 };
       return { ...bucket, rx: number(app.rx), tx: number(app.tx) };
     });
     const rx = rows.reduce((sum, bucket) => sum + bucket.rx, 0);
     const tx = rows.reduce((sum, bucket) => sum + bucket.tx, 0);
-    set("history-download", bytes(rx));
-    set("history-upload", bytes(tx));
-    set("history-total", bytes(rx + tx));
     const max = Math.max(1, ...rows.map((bucket) => bucket.rx + bucket.tx));
     const chart = $("app-history-chart");
     const fragment = document.createDocumentFragment();
@@ -262,6 +307,8 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "history-bucket";
+      button.dataset.ts = String(bucket.ts);
+      button.setAttribute("aria-pressed", String(state.selected === bucket.ts));
       button.title = `${bucketRangeLabel(bucket)}: ${bytes(bucket.rx)} down, ${bytes(bucket.tx)} up`;
       button.setAttribute("aria-label", button.title);
       const down = document.createElement("span");
@@ -273,13 +320,20 @@
       button.append(down, up);
       button.addEventListener("click", () => {
         state.selected = state.selected === bucket.ts ? null : bucket.ts;
+        state.appsExpanded = false;
         renderTimeline();
         renderOverview();
         renderApps();
+        renderAppHistory();
       });
       fragment.append(button);
     }
+    const focusedTimestamp = chart.contains(document.activeElement) ? document.activeElement.dataset.ts : null;
     chart.replaceChildren(fragment);
+    if (focusedTimestamp) {
+      const button = [...chart.children].find((item) => item.dataset.ts === focusedTimestamp);
+      if (button) button.focus({ preventScroll: true });
+    }
     const hasTraffic = rx + tx > 0;
     $("history-empty").hidden = hasTraffic;
     chart.hidden = !hasTraffic;
@@ -382,23 +436,46 @@
     state.range = button.dataset.range;
     state.selected = null;
     state.selectedApp = null;
+    state.appsExpanded = false;
+    renderAppHistory();
     document.querySelectorAll("[data-range]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
     $("export").href = `/api/export?range=${state.range}`;
     set("apps-description", "Loading selected period...");
     refresh();
   }));
   $("sort").addEventListener("change", () => { state.sort = $("sort").value; if (state.data) renderApps(); });
-  $("clear-selection").addEventListener("click", () => { state.selected = null; renderTimeline(); renderOverview(); renderApps(); });
+  $("clear-selection").addEventListener("click", () => { state.selected = null; state.appsExpanded = false; renderTimeline(); renderOverview(); renderApps(); renderAppHistory(); });
   $("return-current").addEventListener("click", () => {
     state.range = "today";
     state.selected = null;
     state.selectedApp = null;
+    state.appsExpanded = false;
+    renderAppHistory();
     document.querySelectorAll("[data-range]").forEach((item) => item.setAttribute("aria-pressed", String(item.dataset.range === "today")));
     $("export").href = "/api/export?range=today";
     set("apps-description", "Loading today's readings...");
     refresh();
   });
-  $("close-app-history").addEventListener("click", () => { state.selectedApp = null; renderApps(); renderAppHistory(); });
+  $("show-more-programs").addEventListener("click", () => {
+    state.appsExpanded = !state.appsExpanded;
+    renderApps();
+    if (state.appsExpanded) $("programs-scroll").focus({ preventScroll: true });
+  });
+  $("close-app-history").addEventListener("click", () => $("app-history-panel").close());
+  $("app-history-panel").addEventListener("close", () => {
+    const name = state.returnProgram;
+    state.selectedApp = null;
+    state.returnProgram = null;
+    document.body.classList.remove("dialog-open");
+    renderApps();
+    (programButton(name) || ($("show-more-programs").hidden ? $("sort") : $("show-more-programs"))).focus({ preventScroll: true });
+  });
+  $("app-history-panel").addEventListener("click", (event) => {
+    const dialog = $("app-history-panel");
+    if (event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+  });
   $("alert-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const enabled = $("alert-enabled").checked;
@@ -435,6 +512,9 @@
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       optionsGroup.dataset.saved = selected;
       state.selected = null;
+      state.selectedApp = null;
+      state.appsExpanded = false;
+      renderAppHistory();
       refresh();
     } catch (error) { notice("network-error", `Could not change the watched connection: ${error.message}. Try selecting it again.`); }
     finally { radios.forEach((radio) => { radio.disabled = false; }); }

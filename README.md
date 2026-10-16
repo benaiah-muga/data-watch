@@ -58,7 +58,8 @@ systemctl --user restart data-watch.service
 - Choose a network connection with accessible radio buttons in the live header.
 - A live throughput meter in the header and a low-contrast Matrix-style background that stays behind the dashboard content.
 - A timeline of usage. Select a period to inspect its attributed programs.
-- Program totals and current rates. Select a program to see its usage history over the chosen period.
+- Program totals and current rates. Select any part of a program row to open its details card, including usage history, live rate, connection share, and last observation. The card follows the selected time interval and supports keyboard access and Escape to close.
+- The program list shows ten entries initially. Use **Show more programs** to browse the full list in a scrollable area, or **Show top 10** to collapse it again.
 - The current on-disk history database size, including pending SQLite WAL writes.
 - A configurable daily data limit. Data Watch sends one Linux desktop notification with the system alarm sound per day when the selected connection reaches it. Use **Send test** to check notifications and sound.
 - CSV export for further analysis.

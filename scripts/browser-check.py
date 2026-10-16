@@ -154,6 +154,8 @@ def main():
         db.execute("INSERT INTO traffic VALUES(?,?,?,?)", (ts, interface, rx + 2400000, tx + 310000))
         db.execute("INSERT INTO apps VALUES(?,?,?,?,?,?)", (ts, interface, "browser-demo", rx, tx, now))
         db.execute("INSERT INTO apps VALUES(?,?,?,?,?,?)", (ts, interface, "editor-demo", 2400000, 310000, now))
+    for index in range(15):
+        db.execute("INSERT INTO apps VALUES(?,?,?,?,?,?)", (minute, interface, f"program-demo-{index:02}", 1000 + index, 100, now))
     db.execute("INSERT INTO settings VALUES('interface', ?)", (interface,))
     db.commit()
     db.close()
@@ -230,8 +232,22 @@ def main():
         assert abs(shares - 100) < .01, shares
         timeline = client.evaluate("(() => { const bars=[...document.querySelectorAll('.time-bucket')]; return {count:bars.length, clear:bars.every(b=>getComputedStyle(b).backgroundColor==='rgba(0, 0, 0, 0)'), quiet:bars.some(b=>b.querySelectorAll('.bar-download:not([hidden]), .bar-upload:not([hidden])').length===0)}; })()")
         assert timeline["count"] >= 3 and timeline["clear"] and timeline["quiet"], timeline
-        app_history = client.evaluate("(() => { const b=[...document.querySelectorAll('.app-history-trigger')].find(x=>x.textContent==='browser-demo'); b.click(); return {hidden:document.querySelector('#app-history-panel').hidden, bars:document.querySelectorAll('#app-history-chart .history-bucket').length, total:document.querySelector('#history-total').textContent}; })()")
-        assert not app_history["hidden"] and app_history["bars"] > 0 and app_history["total"] != "0 B", app_history
+        assert client.evaluate("document.querySelectorAll('#apps tr').length") == 10
+        client.evaluate("document.querySelector('#show-more-programs').click()")
+        expanded = client.evaluate("(() => { const s=document.querySelector('#programs-scroll'); return {rows:document.querySelectorAll('#apps tr').length,expanded:document.querySelector('#show-more-programs').getAttribute('aria-expanded'),scrollable:s.scrollHeight>s.clientHeight}; })()")
+        assert expanded["rows"] >= 17 and expanded["expanded"] == "true" and expanded["scrollable"], expanded
+        client.evaluate("document.querySelector('#show-more-programs').click()")
+        assert client.evaluate("document.querySelectorAll('#apps tr').length") == 10
+        app_history = client.evaluate("(() => { const b=[...document.querySelectorAll('.app-history-trigger')].find(x=>x.textContent==='browser-demo'); const row=b.closest('tr'); const total=row.querySelector('.total-cell').textContent; row.children[2].click(); return {open:document.querySelector('#app-history-panel').open,bars:document.querySelectorAll('#app-history-chart .history-bucket').length,total:document.querySelector('#history-total').textContent,rowTotal:total,focus:document.activeElement.id}; })()")
+        assert app_history["open"] and app_history["bars"] > 0 and app_history["total"] == app_history["rowTotal"] and app_history["focus"] == "close-app-history", app_history
+        client.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})
+        client.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27})
+        assert not client.evaluate("document.querySelector('#app-history-panel').open")
+        assert client.evaluate("document.activeElement.dataset.program") == "browser-demo"
+        client.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13})
+        client.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13})
+        assert client.evaluate("document.querySelector('#app-history-panel').open")
+        client.evaluate("document.querySelector('#close-app-history').click()")
         client.evaluate("(() => { document.querySelector('#alert-enabled').checked=true; document.querySelector('#alert-limit').value='0.5'; document.querySelector('#alert-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})); })()")
         deadline = time.time() + 5
         while time.time() < deadline:
@@ -262,6 +278,9 @@ def main():
         client.call("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True})
         time.sleep(.3)
         assert client.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "mobile layout overflows horizontally"
+        client.evaluate("document.querySelector('#apps tr').children[2].click()")
+        assert client.evaluate("(() => { const d=document.querySelector('#app-history-panel'); const r=d.getBoundingClientRect(); return d.open && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight && d.scrollWidth<=d.clientWidth; })()"), "mobile program dialog exceeds the viewport"
+        client.evaluate("document.querySelector('#close-app-history').click()")
         assert not client.exceptions, f"JavaScript exceptions: {client.exceptions}"
         image = client.call("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": True})["data"]
         (project / ".test-artifacts/dashboard.png").write_bytes(base64.b64decode(image))
